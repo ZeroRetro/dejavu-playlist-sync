@@ -1,0 +1,8 @@
+[allowlist]
+description = "Ignore build and dependency cache artifacts"
+paths = [
+  '''^\.dart_tool/''',
+  '''^build/''',
+  '''^\.gradle/''',
+  '''^\.idea/''',
+]
