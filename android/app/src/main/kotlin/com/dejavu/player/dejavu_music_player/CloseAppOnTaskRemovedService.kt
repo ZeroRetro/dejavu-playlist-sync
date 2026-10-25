@@ -21,6 +21,11 @@ class CloseAppOnTaskRemovedService : Service() {
         try {
             stopService(Intent(this, AudioService::class.java))
         } catch (_: Exception) {}
+        try {
+            val notificationManager = getSystemService(NOTIFICATION_SERVICE) as? android.app.NotificationManager
+            notificationManager?.cancelAll()
+        } catch (_: Exception) {}
         stopSelf()
+        android.os.Process.killProcess(android.os.Process.myPid())
     }
 }

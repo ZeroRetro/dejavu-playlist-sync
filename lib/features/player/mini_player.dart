@@ -36,6 +36,7 @@ class MiniPlayer extends ConsumerWidget {
           isScrollControlled: true,
           useRootNavigator: true,
           backgroundColor: Colors.transparent,
+          barrierColor: Colors.black87,
           builder: (context) => const NowPlayingSheet(),
         );
       },

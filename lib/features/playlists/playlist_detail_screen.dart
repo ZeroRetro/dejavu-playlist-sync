@@ -409,8 +409,7 @@ class PlaylistDetailScreen extends ConsumerWidget {
                                     .playPlaylist(
                                       playlist,
                                       downloadedTracks,
-                                      initialIndex: downloadedTracks
-                                          .indexWhere((t) => t.id == track.id),
+                                      targetTrack: track,
                                     );
                               }
                             : (isFailed ? triggerSync : () {}),

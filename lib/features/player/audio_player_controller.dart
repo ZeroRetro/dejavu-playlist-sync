@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:drift/drift.dart' show Value;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 
 import '../../core/database/app_database.dart';
+import '../sync_engine/youtube_sync_service.dart';
 
 class PlayerStateSnapshot {
   final Track? currentTrack;
@@ -64,10 +66,11 @@ class PlayerStateSnapshot {
 
 class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
   final AudioPlayer _player;
+  final Ref? _ref;
   ConcatenatingAudioSource? _playlistSource;
   final List<StreamSubscription> _subscriptions = [];
 
-  AudioPlayerController()
+  AudioPlayerController([this._ref])
       : _player = AudioPlayer(
           handleInterruptions: true,
           androidApplyAudioAttributes: true,
@@ -115,6 +118,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
           currentTrack: () => track,
           duration: Duration(milliseconds: track.durationMs),
         );
+        _maybeFetchLyrics(track);
       }
     }));
 
@@ -135,11 +139,42 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
     ));
   }
 
+  /// Automatically fetches missing synchronized lyrics in background and updates DB
+  void _maybeFetchLyrics(Track track) {
+    if (track.lyricsLrc != null && track.lyricsLrc!.trim().isNotEmpty) return;
+    Future.microtask(() async {
+      try {
+        final syncService = _ref?.read(youtubeSyncServiceProvider);
+        final db = _ref?.read(appDatabaseProvider);
+        if (syncService == null || db == null) return;
+        final lyrics = await syncService.fetchLyricsForTrack(
+          title: track.title,
+          artist: track.artist,
+          duration: Duration(milliseconds: track.durationMs),
+          youtubeVideoId: track.youtubeVideoId,
+        );
+        if (lyrics != null && lyrics.trim().isNotEmpty) {
+          await (db.update(db.tracks)..where((t) => t.id.equals(track.id))).write(
+            TracksCompanion(lyricsLrc: Value(lyrics)),
+          );
+          if (state.currentTrack?.id == track.id) {
+            state = state.copyWith(
+              currentTrack: () => track.copyWith(lyricsLrc: Value(lyrics)),
+            );
+          }
+        }
+      } catch (e) {
+        debugPrint('Auto-fetch lyrics notice: $e');
+      }
+    });
+  }
+
   /// Play an entire playlist (gapless playback with ConcatenatingAudioSource)
   Future<void> playPlaylist(
     Playlist playlist,
     List<Track> tracks, {
     int initialIndex = 0,
+    Track? targetTrack,
   }) async {
     final playableTracks = tracks.where((t) {
       if (t.localFilePath == null) return false;
@@ -154,6 +189,19 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
     if (playableTracks.isEmpty) {
       return;
     }
+
+    int safeIndex = 0;
+    if (targetTrack != null) {
+      final found = playableTracks.indexWhere((t) => t.id == targetTrack.id);
+      if (found >= 0) {
+        safeIndex = found;
+      } else {
+        safeIndex = initialIndex.clamp(0, playableTracks.length - 1);
+      }
+    } else {
+      safeIndex = initialIndex.clamp(0, playableTracks.length - 1);
+    }
+    final actualTargetTrack = playableTracks[safeIndex];
 
     final audioSources = <AudioSource>[];
     for (final track in playableTracks) {
@@ -187,20 +235,23 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
       useLazyPreparation: false,
     );
 
-    final safeIndex = initialIndex.clamp(0, playableTracks.length - 1);
-    final targetTrack = playableTracks[safeIndex];
-
     state = state.copyWith(
       currentPlaylist: () => playlist,
       queue: playableTracks,
       currentIndex: safeIndex,
-      currentTrack: () => targetTrack,
+      currentTrack: () => actualTargetTrack,
       position: Duration.zero,
-      duration: Duration(milliseconds: targetTrack.durationMs),
+      duration: Duration(milliseconds: actualTargetTrack.durationMs),
       isPlaying: true,
     );
 
+    _maybeFetchLyrics(actualTargetTrack);
+
     try {
+      // Pause active playback first to cleanly transition ExoPlayer MediaItem source
+      if (_player.playing) {
+        await _player.pause();
+      }
       await _player.setAudioSource(
         _playlistSource!,
         initialIndex: safeIndex,
@@ -230,14 +281,19 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
         return;
       }
 
-      // 1. If this track is already in the current loaded queue, perform instant in-memory seek
+      // Check if the current queue already belongs to the same context
+      final isSameContext = contextTracks == null ||
+          (state.queue.length == contextTracks.length &&
+              state.queue.isNotEmpty &&
+              state.queue.first.id == contextTracks.first.id);
+
       final existingIndex = state.queue.indexWhere((t) => t.id == track.id);
-      if (_playlistSource != null &&
+      if (isSameContext &&
+          _playlistSource != null &&
           existingIndex >= 0 &&
           existingIndex < state.queue.length &&
           existingIndex < _playlistSource!.length) {
         final targetTrack = state.queue[existingIndex];
-        // Immediately reflect selection in Riverpod state for zero UI latency
         state = state.copyWith(
           currentIndex: existingIndex,
           currentTrack: () => targetTrack,
@@ -245,19 +301,20 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
           duration: Duration(milliseconds: targetTrack.durationMs),
           isPlaying: true,
         );
+        _maybeFetchLyrics(targetTrack);
         try {
           await _player.seek(Duration.zero, index: existingIndex);
-          await _player.play();
+          if (!_player.playing) {
+            await _player.play();
+          }
           return;
         } catch (e) {
           debugPrint('Direct seek to existing queue track failed, reloading playlist: $e');
         }
       }
 
-      // 2. Otherwise, initialize queue from contextTracks (or single track)
+      // Otherwise, initialize queue from contextTracks (or single track)
       final tracks = contextTracks ?? [track];
-      final targetIndex = tracks.indexWhere((t) => t.id == track.id);
-
       final dummyPlaylist = Playlist(
         id: 'now_playing',
         name: 'All Songs',
@@ -268,7 +325,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
       await playPlaylist(
         dummyPlaylist,
         tracks,
-        initialIndex: targetIndex >= 0 ? targetIndex : 0,
+        targetTrack: track,
       );
     } finally {
       await Future.delayed(const Duration(milliseconds: 100));
@@ -365,5 +422,5 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
 
 final audioPlayerControllerProvider =
     StateNotifierProvider<AudioPlayerController, PlayerStateSnapshot>((ref) {
-  return AudioPlayerController();
+  return AudioPlayerController(ref);
 });

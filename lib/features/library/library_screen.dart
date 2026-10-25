@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -131,13 +132,16 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                             final track = filtered[index];
                             final isCurrentTrack =
                                 currentPlayingTrackId == track.id;
-                            final isCompleted = track.downloadStatus ==
-                                DownloadStatus.completed;
+                            final isPlayable = track.downloadStatus ==
+                                    DownloadStatus.completed ||
+                                (track.localFilePath != null &&
+                                    File(track.localFilePath!).existsSync() &&
+                                    File(track.localFilePath!).lengthSync() >= 50 * 1024);
 
                             return ModernTrackTile(
                               track: track,
                               isPlaying: isCurrentTrack,
-                              onTap: isCompleted
+                              onTap: isPlayable
                                   ? () {
                                       ref
                                           .read(audioPlayerControllerProvider

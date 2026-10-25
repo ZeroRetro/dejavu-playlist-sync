@@ -159,9 +159,17 @@ class MainActivity : AudioServiceActivity() {
                 }
             }
 
+            val audioMime = audioFormat.getString(MediaFormat.KEY_MIME) ?: ""
+            val isAac = audioMime.contains("mp4a", ignoreCase = true) || audioMime.contains("aac", ignoreCase = true)
+
             val startUs = startOffsetMs * 1000L
             if (!hasVideo && startUs <= 0) {
                 // Already pure audio and no intro to strip
+                return true
+            }
+
+            // MediaMuxer MPEG_4 requires AAC audio; for Opus/WebM skip muxing to preserve original file
+            if (!isAac && !hasVideo) {
                 return true
             }
 

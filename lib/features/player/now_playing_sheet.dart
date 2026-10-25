@@ -37,22 +37,38 @@ class _NowPlayingSheetState extends ConsumerState<NowPlayingSheet> {
         color: DejaVuColors.surface,
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
       child: SafeArea(
         top: false,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Drag handle
-            Container(
-              width: 36,
-              height: 4,
-              margin: const EdgeInsets.only(bottom: 20),
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(2),
-              ),
+            // Top Bar with minimize chevron and playlist context title
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                IconButton(
+                  icon: const Icon(
+                    Icons.keyboard_arrow_down_rounded,
+                    color: DejaVuColors.textPrimary,
+                    size: 30,
+                  ),
+                  onPressed: () => Navigator.of(context).pop(),
+                  tooltip: 'Minimize player',
+                ),
+                const Text(
+                  'NOW PLAYING',
+                  style: TextStyle(
+                    color: DejaVuColors.textSecondary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const SizedBox(width: 48), // Symmetrical spacing
+              ],
             ),
+            const SizedBox(height: 8),
 
             // 1:1 Aspect Cover Art or Synchronized Lyrics View
             AspectRatio(
@@ -636,19 +652,28 @@ class _SyncedLyricsView extends StatefulWidget {
 class _SyncedLyricsViewState extends State<_SyncedLyricsView> {
   List<LrcLine> _lines = [];
   final ScrollController _scrollController = ScrollController();
+  final List<GlobalKey> _lineKeys = [];
   int _lastActiveIndex = -1;
 
   @override
   void initState() {
     super.initState();
+    _parseLines();
+  }
+
+  void _parseLines() {
     _lines = LrcParser.parse(widget.lyricsLrc);
+    _lineKeys.clear();
+    for (var i = 0; i < _lines.length; i++) {
+      _lineKeys.add(GlobalKey());
+    }
   }
 
   @override
   void didUpdateWidget(covariant _SyncedLyricsView oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.lyricsLrc != oldWidget.lyricsLrc) {
-      _lines = LrcParser.parse(widget.lyricsLrc);
+      _parseLines();
       _lastActiveIndex = -1;
       if (_scrollController.hasClients) {
         _scrollController.jumpTo(0);
@@ -662,12 +687,25 @@ class _SyncedLyricsViewState extends State<_SyncedLyricsView> {
     if (activeIndex != _lastActiveIndex && activeIndex >= 0) {
       _lastActiveIndex = activeIndex;
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (activeIndex < _lineKeys.length) {
+          final targetContext = _lineKeys[activeIndex].currentContext;
+          if (targetContext != null) {
+            Scrollable.ensureVisible(
+              targetContext,
+              alignment: 0.5,
+              duration: const Duration(milliseconds: 350),
+              curve: Curves.easeOutCubic,
+            );
+            return;
+          }
+        }
         if (_scrollController.hasClients) {
-          final targetOffset = (activeIndex * 44.0) - 100.0;
+          final targetOffset = activeIndex * 48.0;
           _scrollController.animateTo(
             targetOffset.clamp(
                 0.0, _scrollController.position.maxScrollExtent),
-            duration: const Duration(milliseconds: 300),
+            duration: const Duration(milliseconds: 350),
             curve: Curves.easeOutCubic,
           );
         }
@@ -708,52 +746,61 @@ class _SyncedLyricsViewState extends State<_SyncedLyricsView> {
 
     final activeIndex = LrcParser.findActiveIndex(_lines, widget.currentPosition);
 
-    return ShaderMask(
-      shaderCallback: (Rect bounds) {
-        return const LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Colors.transparent,
-            Colors.white,
-            Colors.white,
-            Colors.transparent,
-          ],
-          stops: [0.0, 0.08, 0.92, 1.0],
-        ).createShader(bounds);
-      },
-      blendMode: BlendMode.dstIn,
-      child: ListView.builder(
-        controller: _scrollController,
-        padding: const EdgeInsets.symmetric(vertical: 60, horizontal: 16),
-        itemCount: _lines.length,
-        itemBuilder: (context, index) {
-          final line = _lines[index];
-          final isActive = index == activeIndex;
-
-          return InkWell(
-            onTap: () => widget.onSeek(line.timestamp),
-            borderRadius: BorderRadius.circular(8),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-              child: AnimatedDefaultTextStyle(
-                duration: const Duration(milliseconds: 200),
-                curve: Curves.easeOut,
-                style: TextStyle(
-                  fontSize: isActive ? 18 : 15,
-                  fontWeight: isActive ? FontWeight.w800 : FontWeight.w500,
-                  color: isActive ? Colors.white : Colors.white38,
-                  height: 1.4,
-                ),
-                child: Text(
-                  line.text,
-                  textAlign: TextAlign.center,
-                ),
-              ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final halfHeight = constraints.maxHeight / 2;
+        return ShaderMask(
+          shaderCallback: (Rect bounds) {
+            return const LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                Colors.transparent,
+                Colors.white,
+                Colors.white,
+                Colors.transparent,
+              ],
+              stops: [0.0, 0.12, 0.88, 1.0],
+            ).createShader(bounds);
+          },
+          blendMode: BlendMode.dstIn,
+          child: ListView.builder(
+            controller: _scrollController,
+            padding: EdgeInsets.symmetric(
+              vertical: (halfHeight - 24.0).clamp(20.0, halfHeight),
+              horizontal: 16,
             ),
-          );
-        },
-      ),
+            itemCount: _lines.length,
+            itemBuilder: (context, index) {
+              final line = _lines[index];
+              final isActive = index == activeIndex;
+
+              return InkWell(
+                key: index < _lineKeys.length ? _lineKeys[index] : null,
+                onTap: () => widget.onSeek(line.timestamp),
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                  child: AnimatedDefaultTextStyle(
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOut,
+                    style: TextStyle(
+                      fontSize: isActive ? 18 : 15,
+                      fontWeight: isActive ? FontWeight.w800 : FontWeight.w500,
+                      color: isActive ? Colors.white : Colors.white38,
+                      height: 1.4,
+                    ),
+                    child: Text(
+                      line.text,
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        );
+      },
     );
   }
 }
