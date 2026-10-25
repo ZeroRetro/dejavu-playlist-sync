@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
@@ -53,6 +54,12 @@
 
         <!-- Service to monitor task removal from Recents and stop audio service -->
         <service android:name=".CloseAppOnTaskRemovedService"
+            android:stopWithTask="true"
+            android:exported="false" />
+
+        <!-- Foreground service for playlist synchronization and downloads with wake lock -->
+        <service android:name=".DejaVuSyncService"
+            android:foregroundServiceType="dataSync"
             android:stopWithTask="true"
             android:exported="false" />
 

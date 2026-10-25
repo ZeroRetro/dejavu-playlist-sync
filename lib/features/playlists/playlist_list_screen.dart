@@ -267,12 +267,16 @@ class PlaylistListScreen extends ConsumerWidget {
                                       ),
                                     ),
                                     const SizedBox(width: 6),
-                                    Text(
-                                      'Syncing (${syncState?.completedDownloads ?? 0}/${syncState?.totalToDownload ?? 0})...',
-                                      style: const TextStyle(
-                                        color: DejaVuColors.accent,
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w500,
+                                    Expanded(
+                                      child: Text(
+                                        _buildSyncListText(syncState),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: const TextStyle(
+                                          color: DejaVuColors.accent,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w500,
+                                        ),
                                       ),
                                     ),
                                   ],
@@ -394,5 +398,25 @@ class PlaylistListScreen extends ConsumerWidget {
         },
       ),
     );
+  }
+
+  String _buildSyncListText(PlaylistSyncState? state) {
+    if (state == null) return 'Syncing...';
+    if (state.stage == SyncStage.downloading && state.totalToDownload > 0) {
+      return 'Downloading (${state.completedDownloads}/${state.totalToDownload})...';
+    }
+    if (state.stage == SyncStage.downloading && state.totalToDownload == 0) {
+      return 'All tracks up to date';
+    }
+    if (state.stage == SyncStage.updatingMetadata) {
+      return 'Updating lyrics & artwork...';
+    }
+    if (state.stage == SyncStage.checkingTracks) {
+      return 'Checking tracks...';
+    }
+    if (state.statusMessage.isNotEmpty) {
+      return state.statusMessage;
+    }
+    return 'Syncing...';
   }
 }

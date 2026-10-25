@@ -14,40 +14,74 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 import '../../core/database/app_database.dart';
 import '../../core/utils/audio_native_utils.dart';
 import '../../core/utils/file_utils.dart';
+import '../../core/utils/sync_native_service.dart';
+
+enum SyncStage {
+  idle,
+  fetchingMetadata,
+  checkingTracks,
+  updatingMetadata,
+  downloading,
+  finalizing,
+  completed,
+  error,
+}
 
 /// Represents real-time sync progress for a specific playlist
 class PlaylistSyncState {
   final String playlistId;
   final bool isSyncing;
+  final SyncStage stage;
+  final int totalTracksInPlaylist;
   final int totalToDownload;
   final int completedDownloads;
+  final String statusMessage;
   final String? currentTrackTitle;
   final String? errorMessage;
 
   const PlaylistSyncState({
     required this.playlistId,
     this.isSyncing = false,
+    this.stage = SyncStage.idle,
+    this.totalTracksInPlaylist = 0,
     this.totalToDownload = 0,
     this.completedDownloads = 0,
+    this.statusMessage = '',
     this.currentTrackTitle,
     this.errorMessage,
   });
 
-  double get progress =>
-      totalToDownload == 0 ? 0.0 : completedDownloads / totalToDownload;
+  double get progress {
+    if (totalToDownload == 0) return 0.0;
+    return (completedDownloads / totalToDownload).clamp(0.0, 1.0);
+  }
+
+  bool get isIndeterminate =>
+      isSyncing &&
+      (stage == SyncStage.fetchingMetadata ||
+          stage == SyncStage.checkingTracks ||
+          stage == SyncStage.updatingMetadata ||
+          (stage == SyncStage.downloading && totalToDownload == 0));
 
   PlaylistSyncState copyWith({
     bool? isSyncing,
+    SyncStage? stage,
+    int? totalTracksInPlaylist,
     int? totalToDownload,
     int? completedDownloads,
+    String? statusMessage,
     String? currentTrackTitle,
     String? errorMessage,
   }) {
     return PlaylistSyncState(
       playlistId: playlistId,
       isSyncing: isSyncing ?? this.isSyncing,
+      stage: stage ?? this.stage,
+      totalTracksInPlaylist:
+          totalTracksInPlaylist ?? this.totalTracksInPlaylist,
       totalToDownload: totalToDownload ?? this.totalToDownload,
       completedDownloads: completedDownloads ?? this.completedDownloads,
+      statusMessage: statusMessage ?? this.statusMessage,
       currentTrackTitle: currentTrackTitle,
       errorMessage: errorMessage,
     );
@@ -370,10 +404,18 @@ class YoutubeSyncService {
     }
     _activeSyncs.add(playlistId);
 
+    final initialTitle = playlist.name;
+    await SyncNativeService.startSyncService(
+      title: 'Syncing $initialTitle',
+      message: 'Connecting to YouTube...',
+      indeterminate: true,
+    );
+
     onStateChanged(PlaylistSyncState(
       playlistId: playlistId,
       isSyncing: true,
-      currentTrackTitle: 'Fetching YouTube playlist metadata...',
+      stage: SyncStage.fetchingMetadata,
+      statusMessage: 'Connecting to YouTube...',
     ));
 
     final ytClient = yt.YoutubeExplode();
@@ -397,6 +439,21 @@ class YoutubeSyncService {
           (playlistTitle == 'YouTube Playlist' || playlistTitle.isEmpty)) {
         playlistTitle = fetchResult.title!;
       }
+
+      final totalRemote = remoteVideos.length;
+      await SyncNativeService.updateSyncProgress(
+        title: 'Syncing $playlistTitle',
+        message: 'Checking $totalRemote tracks...',
+        indeterminate: true,
+      );
+
+      onStateChanged(PlaylistSyncState(
+        playlistId: playlistId,
+        isSyncing: true,
+        stage: SyncStage.checkingTracks,
+        totalTracksInPlaylist: totalRemote,
+        statusMessage: 'Checking $totalRemote tracks...',
+      ));
 
       // 2. Fetch currently linked tracks in local DB
       final currentLocalTracks = await _db.getTracksInPlaylist(playlistId);
@@ -474,6 +531,20 @@ class YoutubeSyncService {
               track.lyricsLrc == null || track.lyricsLrc!.isEmpty;
 
           if (thumbMissing || lyricsMissing) {
+            onStateChanged(PlaylistSyncState(
+              playlistId: playlistId,
+              isSyncing: true,
+              stage: SyncStage.updatingMetadata,
+              totalTracksInPlaylist: totalRemote,
+              currentTrackTitle: track.title,
+              statusMessage: 'Updating lyrics & artwork...',
+            ));
+            await SyncNativeService.updateSyncProgress(
+              title: 'Syncing $playlistTitle',
+              message: 'Updating: ${track.title}',
+              indeterminate: true,
+            );
+
             String? healedThumb = track.thumbnailPath;
             String? healedLyrics = track.lyricsLrc;
 
@@ -601,18 +672,58 @@ class YoutubeSyncService {
 
       // 5. Process downloads sequentially (concurrency: 1) with retries for rock-solid stability
       int completedCount = 0;
-      onStateChanged(PlaylistSyncState(
-        playlistId: playlistId,
-        isSyncing: true,
-        totalToDownload: downloadQueue.length,
-        completedDownloads: 0,
-        currentTrackTitle: downloadQueue.isEmpty
-            ? 'Playlist already up to date'
-            : downloadQueue.first.title,
-      ));
+      if (downloadQueue.isNotEmpty) {
+        onStateChanged(PlaylistSyncState(
+          playlistId: playlistId,
+          isSyncing: true,
+          stage: SyncStage.downloading,
+          totalTracksInPlaylist: totalRemote,
+          totalToDownload: downloadQueue.length,
+          completedDownloads: 0,
+          currentTrackTitle: downloadQueue.first.title,
+          statusMessage: 'Downloading new tracks...',
+        ));
+      } else {
+        onStateChanged(PlaylistSyncState(
+          playlistId: playlistId,
+          isSyncing: true,
+          stage: SyncStage.downloading,
+          totalTracksInPlaylist: totalRemote,
+          totalToDownload: 0,
+          completedDownloads: 0,
+          statusMessage:
+              'All $totalRemote tracks already downloaded and up to date',
+        ));
+        await SyncNativeService.updateSyncProgress(
+          title: playlistTitle,
+          message: 'All $totalRemote tracks up to date',
+          progress: 1,
+          total: 1,
+          indeterminate: false,
+        );
+      }
 
       for (var i = 0; i < downloadQueue.length; i++) {
         final task = downloadQueue[i];
+
+        onStateChanged(PlaylistSyncState(
+          playlistId: playlistId,
+          isSyncing: true,
+          stage: SyncStage.downloading,
+          totalTracksInPlaylist: totalRemote,
+          totalToDownload: downloadQueue.length,
+          completedDownloads: completedCount,
+          currentTrackTitle: task.title,
+          statusMessage: 'Downloading: ${task.title}',
+        ));
+        await SyncNativeService.updateSyncProgress(
+          title:
+              'Syncing $playlistTitle (${completedCount + 1}/${downloadQueue.length})',
+          message: task.title,
+          progress: completedCount,
+          total: downloadQueue.length,
+          indeterminate: false,
+        );
 
         // Jitter delay between sequential track downloads to prevent YouTube 429/403 bot throttling
         if (i > 0) {
@@ -628,9 +739,12 @@ class YoutubeSyncService {
         onStateChanged(PlaylistSyncState(
           playlistId: playlistId,
           isSyncing: true,
+          stage: SyncStage.downloading,
+          totalTracksInPlaylist: totalRemote,
           totalToDownload: downloadQueue.length,
           completedDownloads: completedCount,
           currentTrackTitle: task.title,
+          statusMessage: 'Downloaded: ${task.title}',
         ));
       }
 
@@ -675,20 +789,28 @@ class YoutubeSyncService {
       onStateChanged(PlaylistSyncState(
         playlistId: playlistId,
         isSyncing: false,
+        stage: SyncStage.completed,
+        totalTracksInPlaylist: totalRemote,
         totalToDownload: downloadQueue.length,
         completedDownloads: completedCount,
+        statusMessage: downloadQueue.isEmpty
+            ? 'All $totalRemote tracks already up to date'
+            : 'Synced $completedCount new tracks',
       ));
     } catch (e) {
       debugPrint('syncPlaylist fatal error: $e');
       onStateChanged(PlaylistSyncState(
         playlistId: playlistId,
         isSyncing: false,
+        stage: SyncStage.error,
         errorMessage: e.toString(),
+        statusMessage: 'Sync error: $e',
       ));
       rethrow;
     } finally {
       _activeSyncs.remove(playlistId);
       ytClient.close();
+      await SyncNativeService.stopSyncService();
     }
   }
 

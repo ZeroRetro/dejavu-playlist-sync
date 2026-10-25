@@ -113,6 +113,42 @@ void main() {
       final stateUpdated = state1.copyWith(completedDownloads: 10);
       expect(stateUpdated.progress, 1.0);
     });
+
+    test('manages sync stages, metadata, and indeterminate states properly', () {
+      const stateFetching = PlaylistSyncState(
+        playlistId: 'test_pl',
+        isSyncing: true,
+        stage: SyncStage.fetchingMetadata,
+        statusMessage: 'Connecting to YouTube...',
+      );
+      expect(stateFetching.isIndeterminate, isTrue);
+      expect(stateFetching.progress, 0.0);
+
+      const stateAllUpToDate = PlaylistSyncState(
+        playlistId: 'test_pl',
+        isSyncing: true,
+        stage: SyncStage.downloading,
+        totalTracksInPlaylist: 25,
+        totalToDownload: 0,
+        completedDownloads: 0,
+        statusMessage: 'All 25 tracks already downloaded and up to date',
+      );
+      expect(stateAllUpToDate.isIndeterminate, isTrue);
+      expect(stateAllUpToDate.totalTracksInPlaylist, 25);
+      expect(stateAllUpToDate.totalToDownload, 0);
+
+      const stateActiveDownload = PlaylistSyncState(
+        playlistId: 'test_pl',
+        isSyncing: true,
+        stage: SyncStage.downloading,
+        totalTracksInPlaylist: 25,
+        totalToDownload: 4,
+        completedDownloads: 2,
+        currentTrackTitle: 'Awesome Track',
+      );
+      expect(stateActiveDownload.isIndeterminate, isFalse);
+      expect(stateActiveDownload.progress, 0.5);
+    });
   });
 
   group('Playlist Deletion & Orphan Retention Tests', () {

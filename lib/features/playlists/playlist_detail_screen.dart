@@ -288,9 +288,7 @@ class PlaylistDetailScreen extends ConsumerWidget {
                                     children: [
                                       Expanded(
                                         child: Text(
-                                          syncState?.currentTrackTitle != null
-                                              ? '⬇ ${syncState!.currentTrackTitle}'
-                                              : '⬇ Syncing tracks...',
+                                          _buildSyncTitle(syncState),
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
                                           style: const TextStyle(
@@ -300,8 +298,9 @@ class PlaylistDetailScreen extends ConsumerWidget {
                                           ),
                                         ),
                                       ),
+                                      const SizedBox(width: 8),
                                       Text(
-                                        '${syncState?.completedDownloads ?? 0}/${syncState?.totalToDownload ?? 0} (${((syncState?.progress ?? 0) * 100).toInt()}%)',
+                                        _buildSyncCounter(syncState),
                                         style: const TextStyle(
                                           fontSize: 12,
                                           color: DejaVuColors.textSecondary,
@@ -313,7 +312,12 @@ class PlaylistDetailScreen extends ConsumerWidget {
                                   ClipRRect(
                                     borderRadius: BorderRadius.circular(4),
                                     child: LinearProgressIndicator(
-                                      value: syncState?.progress,
+                                      value: syncState?.isIndeterminate == true
+                                          ? null
+                                          : (syncState != null &&
+                                                  syncState.totalToDownload == 0
+                                              ? 1.0
+                                              : syncState?.progress),
                                       backgroundColor: DejaVuColors.surfaceLight,
                                       valueColor:
                                           const AlwaysStoppedAnimation<Color>(
@@ -460,5 +464,40 @@ class PlaylistDetailScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  String _buildSyncTitle(PlaylistSyncState? state) {
+    if (state == null) return '⬇ Syncing tracks...';
+    if (state.stage == SyncStage.downloading && state.totalToDownload > 0) {
+      return state.currentTrackTitle != null
+          ? '⬇ ${state.currentTrackTitle}'
+          : '⬇ Downloading tracks...';
+    }
+    if (state.stage == SyncStage.downloading && state.totalToDownload == 0) {
+      final total = state.totalTracksInPlaylist;
+      return total > 0
+          ? '✓ All $total tracks already downloaded'
+          : '✓ All tracks already downloaded';
+    }
+    if (state.stage == SyncStage.updatingMetadata) {
+      return state.currentTrackTitle != null
+          ? '⬇ Updating: ${state.currentTrackTitle}'
+          : '⬇ Updating lyrics & artwork...';
+    }
+    if (state.statusMessage.isNotEmpty) {
+      return '⬇ ${state.statusMessage}';
+    }
+    return '⬇ Syncing tracks...';
+  }
+
+  String _buildSyncCounter(PlaylistSyncState? state) {
+    if (state == null) return '';
+    if (state.stage == SyncStage.downloading && state.totalToDownload > 0) {
+      return '${state.completedDownloads}/${state.totalToDownload} (${((state.progress) * 100).toInt()}%)';
+    }
+    if (state.stage == SyncStage.downloading && state.totalToDownload == 0) {
+      return 'Up to date';
+    }
+    return '';
   }
 }

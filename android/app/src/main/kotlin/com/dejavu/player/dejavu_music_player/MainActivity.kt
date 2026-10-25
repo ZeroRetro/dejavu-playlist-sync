@@ -8,6 +8,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.media.MediaScannerConnection
+import android.os.Build
 import android.os.Bundle
 import androidx.annotation.NonNull
 import com.ryanheise.audioservice.AudioService
@@ -22,6 +23,7 @@ import java.util.concurrent.Executors
 
 class MainActivity : AudioServiceActivity() {
     private val CHANNEL = "com.dejavu.player/audio_utils"
+    private val SYNC_CHANNEL = "com.dejavu.player/sync_service"
     private val executor = Executors.newFixedThreadPool(2)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -35,6 +37,9 @@ class MainActivity : AudioServiceActivity() {
         if (isFinishing) {
             try {
                 stopService(Intent(this, AudioService::class.java))
+            } catch (_: Exception) {}
+            try {
+                stopService(Intent(this, DejaVuSyncService::class.java))
             } catch (_: Exception) {}
         }
         super.onDestroy()
@@ -93,6 +98,69 @@ class MainActivity : AudioServiceActivity() {
                     } else {
                         result.success(false)
                     }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SYNC_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "startSyncService" -> {
+                    val title = call.argument<String>("title") ?: "DejaVu Sync"
+                    val message = call.argument<String>("message") ?: "Synchronizing playlist..."
+                    val progress = call.argument<Int>("progress") ?: 0
+                    val total = call.argument<Int>("total") ?: 0
+                    val indeterminate = call.argument<Boolean>("indeterminate") ?: (total <= 0)
+
+                    val intent = Intent(this, DejaVuSyncService::class.java).apply {
+                        action = DejaVuSyncService.ACTION_START
+                        putExtra(DejaVuSyncService.EXTRA_TITLE, title)
+                        putExtra(DejaVuSyncService.EXTRA_MESSAGE, message)
+                        putExtra(DejaVuSyncService.EXTRA_PROGRESS, progress)
+                        putExtra(DejaVuSyncService.EXTRA_TOTAL, total)
+                        putExtra(DejaVuSyncService.EXTRA_INDETERMINATE, indeterminate)
+                    }
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                    } catch (_: Exception) {}
+                    result.success(true)
+                }
+                "updateSyncProgress" -> {
+                    val title = call.argument<String>("title") ?: "DejaVu Sync"
+                    val message = call.argument<String>("message") ?: "Synchronizing playlist..."
+                    val progress = call.argument<Int>("progress") ?: 0
+                    val total = call.argument<Int>("total") ?: 0
+                    val indeterminate = call.argument<Boolean>("indeterminate") ?: (total <= 0)
+
+                    val intent = Intent(this, DejaVuSyncService::class.java).apply {
+                        action = DejaVuSyncService.ACTION_UPDATE
+                        putExtra(DejaVuSyncService.EXTRA_TITLE, title)
+                        putExtra(DejaVuSyncService.EXTRA_MESSAGE, message)
+                        putExtra(DejaVuSyncService.EXTRA_PROGRESS, progress)
+                        putExtra(DejaVuSyncService.EXTRA_TOTAL, total)
+                        putExtra(DejaVuSyncService.EXTRA_INDETERMINATE, indeterminate)
+                    }
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                    } catch (_: Exception) {}
+                    result.success(true)
+                }
+                "stopSyncService" -> {
+                    try {
+                        val intent = Intent(this, DejaVuSyncService::class.java).apply {
+                            action = DejaVuSyncService.ACTION_STOP
+                        }
+                        startService(intent)
+                    } catch (_: Exception) {}
+                    result.success(true)
                 }
                 else -> result.notImplemented()
             }
