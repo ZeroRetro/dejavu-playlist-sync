@@ -446,10 +446,28 @@ class YoutubeSyncService {
       final thumbDir = Directory(p.join(appDir.path, 'dejavu_thumbs'));
       if (!await thumbDir.exists()) await thumbDir.create(recursive: true);
 
-      // Auto-heal missing cover art or missing lyrics on existing tracks
+      // Auto-heal missing cover art, missing lyrics, or corrupted audio on existing tracks
       for (final item in remoteVideos) {
         final track = await _db.getTrackByYoutubeId(item.id);
         if (track != null && track.downloadStatus == DownloadStatus.completed) {
+          final isAudioValid = track.localFilePath != null &&
+              await File(track.localFilePath!).exists() &&
+              await File(track.localFilePath!).length() >= 50 * 1024;
+
+          if (!isAudioValid) {
+            // Re-download corrupted or 0-byte track
+            downloadQueue.add(
+              _PendingDownloadTask(
+                trackId: track.id,
+                videoId: item.id,
+                title: item.title,
+                author: item.author,
+                duration: item.duration,
+              ),
+            );
+            continue;
+          }
+
           final thumbMissing = track.thumbnailPath == null ||
               !await File(track.thumbnailPath!).exists();
           final lyricsMissing =
@@ -467,11 +485,15 @@ class YoutubeSyncService {
               );
             }
             if (lyricsMissing) {
+              final cleaned = cleanTitleAndArtist(
+                rawTitle: track.title,
+                rawAuthor: track.artist,
+              );
               healedLyrics = await _fetchLyrics(
                 ytClient: ytClient,
                 videoId: item.id,
-                title: track.title,
-                artist: track.artist,
+                title: cleaned.title,
+                artist: cleaned.artist,
                 duration: Duration(milliseconds: track.durationMs),
               );
             }
@@ -525,10 +547,16 @@ class YoutubeSyncService {
             position: index,
           );
 
-          // Queue for download only if a previous download attempt didn't finish
+          // Queue for download if previous attempt didn't finish or local file is missing/corrupted
+          final localFile = existingTrack.localFilePath != null
+              ? File(existingTrack.localFilePath!)
+              : null;
+          final isFileValid = localFile != null &&
+              await localFile.exists() &&
+              await localFile.length() >= 50 * 1024;
+
           if (existingTrack.downloadStatus != DownloadStatus.completed ||
-              existingTrack.localFilePath == null ||
-              !await File(existingTrack.localFilePath!).exists()) {
+              !isFileValid) {
             downloadQueue.add(
               _PendingDownloadTask(
                 trackId: existingTrack.id,
@@ -696,20 +724,17 @@ class YoutubeSyncService {
             requireWatchPage: false,
           );
 
-          // Stream selection: prefer muxed MP4 tag 18 (AAC stereo with ratebypass=yes)
+          // 1. Stream selection: prefer pure audio-only stream (AAC itag 140 or Opus itag 251)
           yt.StreamInfo? selectedStream;
-          final muxed18 = manifest.muxed.where((s) => s.tag == 18).toList();
-          if (muxed18.isNotEmpty) {
-            selectedStream = muxed18.first;
-          } else if (manifest.muxed.isNotEmpty) {
-            selectedStream = manifest.muxed.withHighestBitrate();
-          } else if (manifest.audioOnly.isNotEmpty) {
+          if (manifest.audioOnly.isNotEmpty) {
             final mp4Audio = manifest.audioOnly
                 .where((s) => s.container == yt.StreamContainer.mp4)
                 .toList();
             selectedStream = mp4Audio.isNotEmpty
                 ? mp4Audio.withHighestBitrate()
                 : manifest.audioOnly.withHighestBitrate();
+          } else if (manifest.muxed.isNotEmpty) {
+            selectedStream = manifest.muxed.withHighestBitrate();
           }
 
           if (selectedStream == null) {
@@ -726,7 +751,7 @@ class YoutubeSyncService {
             await partialFile.delete();
           }
 
-          // Use chunked stream from streamsClient first for rock-solid emulator stability
+          // Use chunked stream from streamsClient first for rock-solid stability
           try {
             final stream = ytClient.videos.streamsClient.get(selectedStream);
             final output = partialFile.openWrite();
@@ -755,6 +780,14 @@ class YoutubeSyncService {
             );
             downloaded = true;
           }
+
+          // Strict validation: audio file must exist and be >= 50KB to be playable
+          final verifiedFile = File(targetPath);
+          if (!await verifiedFile.exists() || await verifiedFile.length() < 50 * 1024) {
+            downloaded = false;
+            if (await verifiedFile.exists()) await verifiedFile.delete();
+            throw StateError('Downloaded audio file is invalid or smaller than 50KB');
+          }
         } catch (err) {
           if (attempts >= 4) rethrow;
           debugPrint('Retry $attempts/4 for ${task.title} after error: $err');
@@ -762,40 +795,48 @@ class YoutubeSyncService {
         }
       }
 
-      // 3.5. Query SponsorBlock for offtopic intro skit skip and strip video
-      int introOffsetMs = 0;
-      try {
-        introOffsetMs = await _fetchSponsorBlockIntroOffset(task.videoId);
-      } catch (_) {}
-
+      // If a muxed stream (with video) was downloaded, strip the video track
       if (finalAudioPath != null && Platform.isAndroid) {
+        int introOffsetMs = 0;
         try {
-          await AudioNativeUtils.stripVideoFromMp4(
-            finalAudioPath,
-            startOffsetMs: introOffsetMs,
-          );
-        } catch (stripErr) {
-          debugPrint('Lossless audio strip skipped: $stripErr');
+          introOffsetMs = await _fetchSponsorBlockIntroOffset(task.videoId);
+        } catch (_) {}
+
+        if (introOffsetMs > 0) {
+          try {
+            await AudioNativeUtils.stripVideoFromMp4(
+              finalAudioPath,
+              startOffsetMs: introOffsetMs,
+            );
+          } catch (stripErr) {
+            debugPrint('Audio trim notice: $stripErr');
+          }
         }
       }
 
-      // 4. Download high quality thumbnail with fallback and 1:1 square crop
+      // 2. Download high quality thumbnail with fallback and 1:1 square crop
       final savedThumbPath = await _downloadThumbnailWithFallback(
         videoId: task.videoId,
         trackId: task.trackId,
         thumbDir: thumbDir,
       );
 
-      // 4.5. Fetch synchronized lyrics (YouTube captions or LRCLIB)
+      // Clean metadata before fetching lyrics for maximum match rate
+      final cleanedMeta = cleanTitleAndArtist(
+        rawTitle: task.title,
+        rawAuthor: task.author,
+      );
+
+      // 3. Fetch synchronized lyrics (YouTube captions or LRCLIB with search fallback)
       final lyrics = await _fetchLyrics(
         ytClient: ytClient,
         videoId: task.videoId,
-        title: task.title,
-        artist: task.author,
+        title: cleanedMeta.title,
+        artist: cleanedMeta.artist,
         duration: task.duration,
       );
 
-      // 5. Update DB track record
+      // 4. Update DB track record immediately so all data is ready on first sync
       await (_db.update(_db.tracks)..where((t) => t.id.equals(task.trackId)))
           .write(
         TracksCompanion(
@@ -803,9 +844,10 @@ class YoutubeSyncService {
           localFilePath: Value(finalAudioPath),
           thumbnailPath: Value(savedThumbPath),
           lyricsLrc: Value(lyrics),
-          artist: Value(task.author.isNotEmpty && task.author != 'Unknown'
-              ? task.author
-              : 'Unknown'),
+          title: Value(cleanedMeta.title),
+          artist: Value(cleanedMeta.artist.isNotEmpty && cleanedMeta.artist != 'Unknown'
+              ? cleanedMeta.artist
+              : (task.author.isNotEmpty && task.author != 'Unknown' ? task.author : 'Unknown')),
           durationMs: Value(task.duration.inMilliseconds),
         ),
       );
@@ -985,7 +1027,7 @@ class YoutubeSyncService {
       }
     } catch (_) {}
 
-    // 2. Fallback to LRCLIB (free open-source lyrics API)
+    // 2. Try LRCLIB exact match API
     try {
       final durationSec = duration.inSeconds;
       final response = await _dio.get(
@@ -1009,6 +1051,58 @@ class YoutubeSyncService {
         final plain = response.data['plainLyrics']?.toString();
         if (plain != null && plain.trim().isNotEmpty) {
           return plain.trim();
+        }
+      }
+    } catch (_) {}
+
+    // 3. Fallback to LRCLIB Search API (handles duration drift and title formatting differences)
+    try {
+      final query = (artist != 'Unknown' && artist.isNotEmpty)
+          ? '$artist $title'
+          : title;
+      final response = await _dio.get(
+        'https://lrclib.net/api/search',
+        queryParameters: {'q': query},
+        options: Options(
+          receiveTimeout: const Duration(seconds: 8),
+          sendTimeout: const Duration(seconds: 8),
+        ),
+      );
+
+      if (response.statusCode == 200 &&
+          response.data is List &&
+          (response.data as List).isNotEmpty) {
+        final list = (response.data as List).whereType<Map>().toList();
+
+        // Prefer items with synced lyrics
+        final syncedItems = list.where((item) {
+          final s = item['syncedLyrics']?.toString();
+          return s != null && s.trim().isNotEmpty;
+        }).toList();
+
+        if (syncedItems.isNotEmpty) {
+          // If duration > 0, pick the candidate closest to track duration
+          if (duration.inSeconds > 0) {
+            syncedItems.sort((a, b) {
+              final durA = (a['duration'] as num?)?.toInt() ?? 0;
+              final durB = (b['duration'] as num?)?.toInt() ?? 0;
+              final diffA = (durA - duration.inSeconds).abs();
+              final diffB = (durB - duration.inSeconds).abs();
+              return diffA.compareTo(diffB);
+            });
+          }
+          final chosen = syncedItems.first['syncedLyrics']?.toString();
+          if (chosen != null && chosen.trim().isNotEmpty) {
+            return chosen.trim();
+          }
+        }
+
+        // Fallback to plain lyrics if synced not found
+        for (final item in list) {
+          final plain = item['plainLyrics']?.toString();
+          if (plain != null && plain.trim().isNotEmpty) {
+            return plain.trim();
+          }
         }
       }
     } catch (_) {}

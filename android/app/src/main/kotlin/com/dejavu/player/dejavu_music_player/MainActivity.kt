@@ -1,5 +1,6 @@
 package com.dejavu.player.dejavu_music_player
 
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaCodec
@@ -7,7 +8,9 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.media.MediaScannerConnection
+import android.os.Bundle
 import androidx.annotation.NonNull
+import com.ryanheise.audioservice.AudioService
 import com.ryanheise.audioservice.AudioServiceActivity
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -20,6 +23,22 @@ import java.util.concurrent.Executors
 class MainActivity : AudioServiceActivity() {
     private val CHANNEL = "com.dejavu.player/audio_utils"
     private val executor = Executors.newFixedThreadPool(2)
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        try {
+            startService(Intent(this, CloseAppOnTaskRemovedService::class.java))
+        } catch (_: Exception) {}
+    }
+
+    override fun onDestroy() {
+        if (isFinishing) {
+            try {
+                stopService(Intent(this, AudioService::class.java))
+            } catch (_: Exception) {}
+        }
+        super.onDestroy()
+    }
 
     override fun configureFlutterEngine(@NonNull flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)

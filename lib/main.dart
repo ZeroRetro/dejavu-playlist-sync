@@ -4,9 +4,11 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio_background/just_audio_background.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import 'core/theme/dejavu_theme.dart';
 import 'features/library/library_screen.dart';
+import 'features/player/audio_player_controller.dart';
 import 'features/player/mini_player.dart';
 import 'features/playlists/playlist_list_screen.dart';
 
@@ -21,9 +23,9 @@ Future<void> main() async {
       await JustAudioBackground.init(
         androidNotificationChannelId: 'com.dejavu.player.channel.audio',
         androidNotificationChannelName: 'DejaVu Music Playback',
-        androidNotificationOngoing: true,
-        androidStopForegroundOnPause: false,
-        androidNotificationIcon: 'mipmap/ic_launcher',
+        androidNotificationOngoing: false,
+        androidStopForegroundOnPause: true,
+        androidNotificationIcon: 'drawable/ic_music_notification',
       );
     } catch (e) {
       debugPrint('Audio service init error: $e');
@@ -60,11 +62,39 @@ class MainScaffold extends ConsumerStatefulWidget {
 
 class _MainScaffoldState extends ConsumerState<MainScaffold> {
   int _currentIndex = 0;
+  AppLifecycleListener? _lifecycleListener;
 
   final _screens = const [
     PlaylistListScreen(),
     LibraryScreen(),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _requestNotificationPermission();
+    _lifecycleListener = AppLifecycleListener(
+      onDetach: () {
+        ref.read(audioPlayerControllerProvider.notifier).stopAndClear();
+      },
+    );
+  }
+
+  Future<void> _requestNotificationPermission() async {
+    if (!kIsWeb && Platform.isAndroid) {
+      try {
+        await Permission.notification.request();
+      } catch (e) {
+        debugPrint('Notification permission error: $e');
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _lifecycleListener?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

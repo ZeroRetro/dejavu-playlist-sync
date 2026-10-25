@@ -141,10 +141,15 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
     List<Track> tracks, {
     int initialIndex = 0,
   }) async {
-    final playableTracks = tracks
-        .where((t) =>
-            t.localFilePath != null && File(t.localFilePath!).existsSync())
-        .toList();
+    final playableTracks = tracks.where((t) {
+      if (t.localFilePath == null) return false;
+      try {
+        final f = File(t.localFilePath!);
+        return f.existsSync() && f.lengthSync() >= 50 * 1024;
+      } catch (_) {
+        return false;
+      }
+    }).toList();
 
     if (playableTracks.isEmpty) {
       return;
@@ -182,23 +187,23 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
       useLazyPreparation: false,
     );
 
+    final safeIndex = initialIndex.clamp(0, playableTracks.length - 1);
+    final targetTrack = playableTracks[safeIndex];
+
     state = state.copyWith(
       currentPlaylist: () => playlist,
       queue: playableTracks,
-      currentIndex: initialIndex.clamp(0, playableTracks.length - 1),
-      currentTrack: () => playableTracks[
-          initialIndex.clamp(0, playableTracks.length - 1)],
+      currentIndex: safeIndex,
+      currentTrack: () => targetTrack,
+      position: Duration.zero,
+      duration: Duration(milliseconds: targetTrack.durationMs),
+      isPlaying: true,
     );
 
     try {
-      // Guard against DAC discontinuity/popping: pause active AudioTrack before tearing down decoder
-      if (_player.playing) {
-        await _player.pause();
-      }
-
       await _player.setAudioSource(
         _playlistSource!,
-        initialIndex: initialIndex.clamp(0, playableTracks.length - 1),
+        initialIndex: safeIndex,
         initialPosition: Duration.zero,
       );
       await _player.play();
@@ -214,31 +219,48 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
     if (_isChangingTrack) return;
     _isChangingTrack = true;
     try {
-      final tracks = contextTracks ?? [track];
-      final targetIndex = tracks.indexWhere((t) => t.id == track.id);
+      if (track.localFilePath == null) return;
+      try {
+        final f = File(track.localFilePath!);
+        if (!f.existsSync() || f.lengthSync() < 50 * 1024) {
+          debugPrint('Audio file is missing or invalid (< 50KB): ${track.localFilePath}');
+          return;
+        }
+      } catch (_) {
+        return;
+      }
 
-      // Fast-path: if this exact playlist queue is already initialized and loaded,
-      // avoid rebuilding ConcatenatingAudioSource and resetting ExoPlayer.
-      // Perform a seamless in-memory seek to target index instead.
+      // 1. If this track is already in the current loaded queue, perform instant in-memory seek
+      final existingIndex = state.queue.indexWhere((t) => t.id == track.id);
       if (_playlistSource != null &&
-          state.queue.length == tracks.length &&
-          targetIndex >= 0 &&
-          targetIndex < state.queue.length &&
-          state.queue[targetIndex].id == track.id) {
+          existingIndex >= 0 &&
+          existingIndex < state.queue.length &&
+          existingIndex < _playlistSource!.length) {
+        final targetTrack = state.queue[existingIndex];
+        // Immediately reflect selection in Riverpod state for zero UI latency
+        state = state.copyWith(
+          currentIndex: existingIndex,
+          currentTrack: () => targetTrack,
+          position: Duration.zero,
+          duration: Duration(milliseconds: targetTrack.durationMs),
+          isPlaying: true,
+        );
         try {
-          await _player.seek(Duration.zero, index: targetIndex);
-          if (!_player.playing) {
-            await _player.play();
-          }
+          await _player.seek(Duration.zero, index: existingIndex);
+          await _player.play();
           return;
         } catch (e) {
-          debugPrint('Direct seek to track index failed, reloading: $e');
+          debugPrint('Direct seek to existing queue track failed, reloading playlist: $e');
         }
       }
 
+      // 2. Otherwise, initialize queue from contextTracks (or single track)
+      final tracks = contextTracks ?? [track];
+      final targetIndex = tracks.indexWhere((t) => t.id == track.id);
+
       final dummyPlaylist = Playlist(
         id: 'now_playing',
-        name: 'Now Playing',
+        name: 'All Songs',
         isYoutubeSynced: false,
         createdAt: DateTime.now(),
       );
@@ -249,7 +271,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
         initialIndex: targetIndex >= 0 ? targetIndex : 0,
       );
     } finally {
-      await Future.delayed(const Duration(milliseconds: 120));
+      await Future.delayed(const Duration(milliseconds: 100));
       _isChangingTrack = false;
     }
   }

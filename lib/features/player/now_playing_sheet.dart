@@ -79,6 +79,7 @@ class _NowPlayingSheetState extends ConsumerState<NowPlayingSheet> {
                                   .select((s) => s.position),
                             );
                             return _SyncedLyricsView(
+                              key: ValueKey(track.id),
                               lyricsLrc: track.lyricsLrc,
                               currentPosition: pos,
                               onSeek: (target) {
@@ -622,6 +623,7 @@ class _SyncedLyricsView extends StatefulWidget {
   final void Function(Duration) onSeek;
 
   const _SyncedLyricsView({
+    super.key,
     required this.lyricsLrc,
     required this.currentPosition,
     required this.onSeek,
@@ -632,7 +634,7 @@ class _SyncedLyricsView extends StatefulWidget {
 }
 
 class _SyncedLyricsViewState extends State<_SyncedLyricsView> {
-  late final List<LrcLine> _lines;
+  List<LrcLine> _lines = [];
   final ScrollController _scrollController = ScrollController();
   int _lastActiveIndex = -1;
 
@@ -645,6 +647,14 @@ class _SyncedLyricsViewState extends State<_SyncedLyricsView> {
   @override
   void didUpdateWidget(covariant _SyncedLyricsView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.lyricsLrc != oldWidget.lyricsLrc) {
+      _lines = LrcParser.parse(widget.lyricsLrc);
+      _lastActiveIndex = -1;
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(0);
+      }
+    }
+
     if (_lines.isEmpty) return;
 
     final activeIndex = LrcParser.findActiveIndex(_lines, widget.currentPosition);
