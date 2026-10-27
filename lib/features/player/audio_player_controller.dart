@@ -69,6 +69,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
   final Ref? _ref;
   ConcatenatingAudioSource? _playlistSource;
   final List<StreamSubscription> _subscriptions = [];
+  bool _isLoadingSource = false;
 
   AudioPlayerController([this._ref])
       : _player = AudioPlayer(
@@ -108,7 +109,8 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
     }));
 
     _subscriptions.add(_player.currentIndexStream.listen((index) {
-      if (state.currentTrack != null &&
+      if (!_isLoadingSource &&
+          state.currentTrack != null &&
           index != null &&
           index >= 0 &&
           index < state.queue.length) {
@@ -232,7 +234,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
 
     _playlistSource = ConcatenatingAudioSource(
       children: audioSources,
-      useLazyPreparation: false,
+      useLazyPreparation: true,
     );
 
     state = state.copyWith(
@@ -247,11 +249,8 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
 
     _maybeFetchLyrics(actualTargetTrack);
 
+    _isLoadingSource = true;
     try {
-      // Pause active playback first to cleanly transition ExoPlayer MediaItem source
-      if (_player.playing) {
-        await _player.pause();
-      }
       await _player.setAudioSource(
         _playlistSource!,
         initialIndex: safeIndex,
@@ -260,13 +259,19 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
       await _player.play();
     } catch (e) {
       debugPrint('Error playing playlist: $e');
+    } finally {
+      _isLoadingSource = false;
     }
   }
 
   bool _isChangingTrack = false;
 
   /// Play a single track directly
-  Future<void> playTrack(Track track, {List<Track>? contextTracks}) async {
+  Future<void> playTrack(
+    Track track, {
+    List<Track>? contextTracks,
+    Playlist? playlist,
+  }) async {
     if (_isChangingTrack) return;
     _isChangingTrack = true;
     try {
@@ -281,19 +286,44 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
         return;
       }
 
-      // Check if the current queue already belongs to the same context
-      final isSameContext = contextTracks == null ||
+      final targetPlaylist = playlist ??
+          Playlist(
+            id: 'now_playing',
+            name: 'All Songs',
+            isYoutubeSynced: false,
+            createdAt: DateTime.now(),
+          );
+
+      // Fast-path seek only applies if we are ALREADY playing within this exact playlist context
+      final isSamePlaylistContext = state.currentPlaylist?.id == targetPlaylist.id;
+
+      // Check if contextTracks matches current queue
+      final isSameQueue = contextTracks == null ||
           (state.queue.length == contextTracks.length &&
               state.queue.isNotEmpty &&
-              state.queue.first.id == contextTracks.first.id);
+              state.queue.first.id == contextTracks.first.id &&
+              state.queue.last.id == contextTracks.last.id);
 
+      final isSameContext = isSamePlaylistContext && isSameQueue;
       final existingIndex = state.queue.indexWhere((t) => t.id == track.id);
+
       if (isSameContext &&
           _playlistSource != null &&
           existingIndex >= 0 &&
           existingIndex < state.queue.length &&
           existingIndex < _playlistSource!.length) {
         final targetTrack = state.queue[existingIndex];
+
+        // If it is already the current track, ensure it's playing or seek to start
+        if (state.currentTrack?.id == track.id) {
+          if (!_player.playing) {
+            await _player.play();
+          } else {
+            await _player.seek(Duration.zero, index: existingIndex);
+          }
+          return;
+        }
+
         state = state.copyWith(
           currentIndex: existingIndex,
           currentTrack: () => targetTrack,
@@ -313,17 +343,10 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
         }
       }
 
-      // Otherwise, initialize queue from contextTracks (or single track)
+      // Otherwise, initialize new queue from contextTracks (or single track) under targetPlaylist
       final tracks = contextTracks ?? [track];
-      final dummyPlaylist = Playlist(
-        id: 'now_playing',
-        name: 'All Songs',
-        isYoutubeSynced: false,
-        createdAt: DateTime.now(),
-      );
-
       await playPlaylist(
-        dummyPlaylist,
+        targetPlaylist,
         tracks,
         targetTrack: track,
       );

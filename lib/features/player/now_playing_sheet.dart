@@ -396,6 +396,7 @@ class _NowPlayingSheetState extends ConsumerState<NowPlayingSheet> {
                               .playTrack(
                                 t,
                                 contextTracks: playerState.queue,
+                                playlist: playerState.currentPlaylist,
                               );
                         },
                       );

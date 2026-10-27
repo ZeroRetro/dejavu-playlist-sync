@@ -24,7 +24,7 @@ Future<void> main() async {
         androidNotificationChannelId: 'com.dejavu.player.channel.audio',
         androidNotificationChannelName: 'DejaVu Music Playback',
         androidNotificationOngoing: false,
-        androidStopForegroundOnPause: true,
+        androidStopForegroundOnPause: false,
         androidNotificationIcon: 'drawable/ic_music_notification',
       );
     } catch (e) {

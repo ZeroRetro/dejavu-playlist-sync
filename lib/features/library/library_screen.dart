@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -132,24 +131,62 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                             final track = filtered[index];
                             final isCurrentTrack =
                                 currentPlayingTrackId == track.id;
-                            final isPlayable = track.downloadStatus ==
-                                    DownloadStatus.completed ||
-                                (track.localFilePath != null &&
-                                    File(track.localFilePath!).existsSync() &&
-                                    File(track.localFilePath!).lengthSync() >= 50 * 1024);
+                            final isCompleted = track.downloadStatus ==
+                                DownloadStatus.completed;
+                            final isDownloading = track.downloadStatus ==
+                                    DownloadStatus.downloading ||
+                                track.downloadStatus ==
+                                    DownloadStatus.converting;
+                            final isFailed = track.downloadStatus ==
+                                DownloadStatus.failed;
 
                             return ModernTrackTile(
                               track: track,
                               isPlaying: isCurrentTrack,
-                              onTap: isPlayable
-                                  ? () {
-                                      ref
-                                          .read(audioPlayerControllerProvider
-                                              .notifier)
-                                          .playTrack(track,
-                                              contextTracks: filtered);
-                                    }
-                                  : () {},
+                              onTap: () {
+                                if (isCompleted) {
+                                  ref
+                                      .read(audioPlayerControllerProvider
+                                          .notifier)
+                                      .playTrack(
+                                        track,
+                                        contextTracks: filtered,
+                                      );
+                                } else if (isDownloading) {
+                                  ScaffoldMessenger.of(context)
+                                      .hideCurrentSnackBar();
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                          'Downloading "${track.title}"... Please wait.'),
+                                      duration: const Duration(seconds: 2),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                } else if (isFailed) {
+                                  ScaffoldMessenger.of(context)
+                                      .hideCurrentSnackBar();
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                          'Download failed for "${track.title}". Re-sync its playlist to retry.'),
+                                      duration: const Duration(seconds: 3),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                } else {
+                                  ScaffoldMessenger.of(context)
+                                      .hideCurrentSnackBar();
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(
+                                          '"${track.title}" is queued for download.'),
+                                      duration: const Duration(seconds: 2),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                }
+                              },
                               onMoreTap: () =>
                                   _showTrackMenu(context, ref, track),
                             );
