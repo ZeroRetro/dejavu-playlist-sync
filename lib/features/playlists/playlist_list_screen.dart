@@ -51,8 +51,7 @@ class PlaylistListScreen extends ConsumerWidget {
               if (playlists.isEmpty) {
                 if (context.mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content: Text('No playlists to sync.')),
+                    const SnackBar(content: Text('No playlists to sync.')),
                   );
                 }
                 return;
@@ -156,7 +155,8 @@ class PlaylistListScreen extends ConsumerWidget {
                     if (kDebugMode) ...[
                       const SizedBox(height: 12),
                       TextButton(
-                        onPressed: () => DemoSeeder.seedCreativeCommonsShowcase(db),
+                        onPressed: () =>
+                            DemoSeeder.seedCreativeCommonsShowcase(db),
                         child: const Text(
                           'Load Demo Showcase',
                           style: TextStyle(
@@ -323,7 +323,8 @@ class PlaylistListScreen extends ConsumerWidget {
                               child: Row(
                                 children: [
                                   Icon(Icons.share_rounded,
-                                      color: DejaVuColors.textPrimary, size: 18),
+                                      color: DejaVuColors.textPrimary,
+                                      size: 18),
                                   SizedBox(width: 8),
                                   Text(
                                     'Share YouTube Playlist',
@@ -340,7 +341,8 @@ class PlaylistListScreen extends ConsumerWidget {
                               child: Row(
                                 children: [
                                   Icon(Icons.sync_rounded,
-                                      color: DejaVuColors.textPrimary, size: 18),
+                                      color: DejaVuColors.textPrimary,
+                                      size: 18),
                                   SizedBox(width: 8),
                                   Text(
                                     'Sync Now',
@@ -357,7 +359,8 @@ class PlaylistListScreen extends ConsumerWidget {
                               child: Row(
                                 children: [
                                   Icon(Icons.info_outline_rounded,
-                                      color: DejaVuColors.textPrimary, size: 18),
+                                      color: DejaVuColors.textPrimary,
+                                      size: 18),
                                   SizedBox(width: 8),
                                   Text(
                                     'Playlist Details',
@@ -403,7 +406,15 @@ class PlaylistListScreen extends ConsumerWidget {
   String _buildSyncListText(PlaylistSyncState? state) {
     if (state == null) return 'Syncing...';
     if (state.stage == SyncStage.downloading && state.totalToDownload > 0) {
-      return 'Downloading (${state.completedDownloads}/${state.totalToDownload})...';
+      final pct = (state.progress * 100).toInt();
+      final speed = state.downloadSpeedKbps;
+      if (speed > 0) {
+        final speedText = speed >= 1024
+            ? '${(speed / 1024).toStringAsFixed(1)} MB/s'
+            : '${speed.toStringAsFixed(0)} KB/s';
+        return 'Downloading (${state.completedDownloads}/${state.totalToDownload} • $pct% • $speedText)...';
+      }
+      return 'Downloading (${state.completedDownloads}/${state.totalToDownload} • $pct%)...';
     }
     if (state.stage == SyncStage.downloading && state.totalToDownload == 0) {
       return 'All tracks up to date';

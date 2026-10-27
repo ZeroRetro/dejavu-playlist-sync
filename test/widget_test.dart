@@ -71,7 +71,8 @@ void main() {
 
       expect(m3u8, contains('#EXTM3U'));
       expect(m3u8, contains('#PLAYLIST:Open Media Archive'));
-      expect(m3u8, contains('#EXTINF:432,Blender Foundation - Big Buck Bunny Suite'));
+      expect(m3u8,
+          contains('#EXTINF:432,Blender Foundation - Big Buck Bunny Suite'));
       expect(m3u8, contains('t1.m4a'));
       expect(m3u8, contains('#EXTINF:253,Jan Morgenstern - Sintel Theme'));
       expect(m3u8, contains('t2.m4a'));
@@ -112,9 +113,23 @@ void main() {
 
       final stateUpdated = state1.copyWith(completedDownloads: 10);
       expect(stateUpdated.progress, 1.0);
+
+      // Sub-track progress computation
+      final stateWithSubTrack = state1.copyWith(
+        completedDownloads: 1,
+        trackProgress: 0.5,
+        trackBytesReceived: 5 * 1024 * 1024,
+        trackBytesTotal: 10 * 1024 * 1024,
+        downloadSpeedKbps: 4500.0,
+      );
+      // (1 + 0.5) / 10 = 0.15
+      expect(stateWithSubTrack.progress, 0.15);
+      expect(stateWithSubTrack.trackBytesReceived, 5 * 1024 * 1024);
+      expect(stateWithSubTrack.downloadSpeedKbps, 4500.0);
     });
 
-    test('manages sync stages, metadata, and indeterminate states properly', () {
+    test('manages sync stages, metadata, and indeterminate states properly',
+        () {
       const stateFetching = PlaylistSyncState(
         playlistId: 'test_pl',
         isSyncing: true,
@@ -383,7 +398,8 @@ void main() {
       expect(lines.length, 3);
       expect(lines[0].timestamp, const Duration(seconds: 4, milliseconds: 200));
       expect(lines[0].text, 'First line of lyrics');
-      expect(lines[1].timestamp, const Duration(seconds: 12, milliseconds: 850));
+      expect(
+          lines[1].timestamp, const Duration(seconds: 12, milliseconds: 850));
       expect(lines[1].text, 'Second line with millisecond precision');
       expect(lines[2].timestamp, const Duration(minutes: 1, seconds: 5));
       expect(lines[2].text, 'Chorus starts here');

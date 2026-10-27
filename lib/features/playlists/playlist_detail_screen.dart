@@ -23,8 +23,8 @@ class PlaylistDetailScreen extends ConsumerWidget {
     final syncStates = ref.watch(syncControllerProvider);
     final syncState = syncStates[playlist.id];
     final isSyncing = syncState?.isSyncing ?? false;
-    final currentPlayingTrackId = ref.watch(
-        audioPlayerControllerProvider.select((s) => s.currentTrack?.id));
+    final currentPlayingTrackId = ref
+        .watch(audioPlayerControllerProvider.select((s) => s.currentTrack?.id));
     final tracksAsync = ref.watch(playlistTracksStreamProvider(playlist.id));
 
     void triggerSync() {
@@ -318,7 +318,8 @@ class PlaylistDetailScreen extends ConsumerWidget {
                                                   syncState.totalToDownload == 0
                                               ? 1.0
                                               : syncState?.progress),
-                                      backgroundColor: DejaVuColors.surfaceLight,
+                                      backgroundColor:
+                                          DejaVuColors.surfaceLight,
                                       valueColor:
                                           const AlwaysStoppedAnimation<Color>(
                                               DejaVuColors.accent),
@@ -340,7 +341,8 @@ class PlaylistDetailScreen extends ConsumerWidget {
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 14, vertical: 8),
                                 decoration: BoxDecoration(
-                                  color: Colors.redAccent.withValues(alpha: 0.15),
+                                  color:
+                                      Colors.redAccent.withValues(alpha: 0.15),
                                   borderRadius: BorderRadius.circular(8),
                                 ),
                                 child: Row(
@@ -396,8 +398,7 @@ class PlaylistDetailScreen extends ConsumerWidget {
                   delegate: SliverChildBuilderDelegate(
                     (context, index) {
                       final track = tracks[index];
-                      final isCurrentTrack =
-                          currentPlayingTrackId == track.id;
+                      final isCurrentTrack = currentPlayingTrackId == track.id;
                       final isCompleted =
                           track.downloadStatus == DownloadStatus.completed;
                       final isFailed =
@@ -409,7 +410,8 @@ class PlaylistDetailScreen extends ConsumerWidget {
                         onTap: isCompleted
                             ? () {
                                 ref
-                                    .read(audioPlayerControllerProvider.notifier)
+                                    .read(
+                                        audioPlayerControllerProvider.notifier)
                                     .playPlaylist(
                                       playlist,
                                       downloadedTracks,
@@ -493,7 +495,15 @@ class PlaylistDetailScreen extends ConsumerWidget {
   String _buildSyncCounter(PlaylistSyncState? state) {
     if (state == null) return '';
     if (state.stage == SyncStage.downloading && state.totalToDownload > 0) {
-      return '${state.completedDownloads}/${state.totalToDownload} (${((state.progress) * 100).toInt()}%)';
+      final pct = ((state.progress) * 100).toInt();
+      final speed = state.downloadSpeedKbps;
+      if (speed > 0) {
+        final speedText = speed >= 1024
+            ? '${(speed / 1024).toStringAsFixed(1)} MB/s'
+            : '${speed.toStringAsFixed(0)} KB/s';
+        return '${state.completedDownloads}/${state.totalToDownload} ($pct% • $speedText)';
+      }
+      return '${state.completedDownloads}/${state.totalToDownload} ($pct%)';
     }
     if (state.stage == SyncStage.downloading && state.totalToDownload == 0) {
       return 'Up to date';
