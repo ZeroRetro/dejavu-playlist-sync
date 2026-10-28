@@ -405,6 +405,7 @@ class YoutubeSyncService {
   /// Executes a full Delta Sync for an existing YouTube-linked playlist
   Future<void> syncPlaylist({
     required String playlistId,
+    bool forceResync = false,
     bool convertToMp3 = false,
     bool deleteOrphanedFiles = false,
     required void Function(PlaylistSyncState) onStateChanged,
@@ -522,92 +523,18 @@ class YoutubeSyncService {
       final thumbDir = Directory(p.join(appDir.path, 'dejavu_thumbs'));
       if (!await thumbDir.exists()) await thumbDir.create(recursive: true);
 
-      // Auto-heal missing cover art, missing lyrics, or corrupted audio on existing tracks
-      for (final item in remoteVideos) {
-        final track = await _db.getTrackByYoutubeId(item.id);
-        if (track != null && track.downloadStatus == DownloadStatus.completed) {
-          final isAudioValid = track.localFilePath != null &&
-              await File(track.localFilePath!).exists() &&
-              await File(track.localFilePath!).length() >= 50 * 1024;
-
-          if (!isAudioValid) {
-            // Re-download corrupted or 0-byte track
-            downloadQueue.add(
-              _PendingDownloadTask(
-                trackId: track.id,
-                videoId: item.id,
-                title: item.title,
-                author: item.author,
-                duration: item.duration,
-              ),
-            );
-            continue;
-          }
-
-          final thumbMissing = track.thumbnailPath == null ||
-              !await File(track.thumbnailPath!).exists();
-          final lyricsMissing =
-              track.lyricsLrc == null || track.lyricsLrc!.isEmpty;
-
-          if (thumbMissing || lyricsMissing) {
-            onStateChanged(PlaylistSyncState(
-              playlistId: playlistId,
-              isSyncing: true,
-              stage: SyncStage.updatingMetadata,
-              totalTracksInPlaylist: totalRemote,
-              currentTrackTitle: track.title,
-              statusMessage: 'Updating lyrics & artwork...',
-            ));
-            await SyncNativeService.updateSyncProgress(
-              title: 'Syncing $playlistTitle',
-              message: 'Updating: ${track.title}',
-              indeterminate: true,
-            );
-
-            String? healedThumb = track.thumbnailPath;
-            String? healedLyrics = track.lyricsLrc;
-
-            if (thumbMissing) {
-              healedThumb = await _downloadThumbnailWithFallback(
-                videoId: item.id,
-                trackId: track.id,
-                thumbDir: thumbDir,
-              );
-            }
-            if (lyricsMissing) {
-              final cleaned = cleanTitleAndArtist(
-                rawTitle: track.title,
-                rawAuthor: track.artist,
-              );
-              healedLyrics = await _fetchLyrics(
-                ytClient: ytClient,
-                videoId: item.id,
-                title: cleaned.title,
-                artist: cleaned.artist,
-                duration: Duration(milliseconds: track.durationMs),
-              );
-            }
-
-            if (healedThumb != track.thumbnailPath ||
-                healedLyrics != track.lyricsLrc) {
-              await (_db.update(_db.tracks)
-                    ..where((t) => t.id.equals(track.id)))
-                  .write(
-                TracksCompanion(
-                  thumbnailPath: Value(healedThumb),
-                  lyricsLrc: Value(healedLyrics),
-                ),
-              );
-            }
-          }
-        }
-      }
-
       for (var index = 0; index < remoteVideos.length; index++) {
         final item = remoteVideos[index];
         final existingTrack = await _db.getTrackByYoutubeId(item.id);
 
         if (existingTrack != null) {
+          // Link immediately and update its position in the playlist
+          await _db.linkTrackToPlaylist(
+            playlistId: playlistId,
+            trackId: existingTrack.id,
+            position: index,
+          );
+
           // Update track metadata if remote has better information (artist or duration)
           final needsMetadataUpdate =
               (existingTrack.artist == 'Unknown' && item.author != 'Unknown') ||
@@ -631,23 +558,47 @@ class YoutubeSyncService {
             );
           }
 
-          // Link immediately and update its position in the playlist
-          await _db.linkTrackToPlaylist(
-            playlistId: playlistId,
-            trackId: existingTrack.id,
-            position: index,
-          );
-
-          // Queue for download if previous attempt didn't finish or local file is missing/corrupted
           final localFile = existingTrack.localFilePath != null
               ? File(existingTrack.localFilePath!)
               : null;
-          final isFileValid = localFile != null &&
+          final isAudioValid = localFile != null &&
               await localFile.exists() &&
               await localFile.length() >= 50 * 1024;
 
+          final hasThumb = existingTrack.thumbnailPath != null &&
+              await File(existingTrack.thumbnailPath!).exists();
+          final hasLyrics = existingTrack.lyricsLrc != null &&
+              existingTrack.lyricsLrc!.trim().isNotEmpty;
+
+          // If track is complete and forceResync is false:
+          if (existingTrack.downloadStatus == DownloadStatus.completed &&
+              isAudioValid &&
+              !forceResync) {
+            if (hasThumb && hasLyrics) {
+              // Track already has valid audio, cover, and lyrics. No network needed!
+              continue;
+            }
+
+            // Heal missing thumbnail if deleted from disk
+            if (!hasThumb) {
+              final healedThumb = await _downloadThumbnailWithFallback(
+                videoId: item.id,
+                trackId: existingTrack.id,
+                thumbDir: thumbDir,
+              );
+              if (healedThumb != null) {
+                await (_db.update(_db.tracks)
+                      ..where((t) => t.id.equals(existingTrack.id)))
+                    .write(TracksCompanion(thumbnailPath: Value(healedThumb)));
+              }
+            }
+            continue;
+          }
+
+          // If audio is missing/invalid, or forceResync is requested:
           if (existingTrack.downloadStatus != DownloadStatus.completed ||
-              !isFileValid) {
+              !isAudioValid ||
+              forceResync) {
             downloadQueue.add(
               _PendingDownloadTask(
                 trackId: existingTrack.id,
@@ -655,6 +606,9 @@ class YoutubeSyncService {
                 title: item.title,
                 author: item.author,
                 duration: item.duration,
+                existingThumbnailPath:
+                    forceResync ? null : existingTrack.thumbnailPath,
+                existingLyrics: forceResync ? null : existingTrack.lyricsLrc,
               ),
             );
           }
@@ -692,6 +646,7 @@ class YoutubeSyncService {
 
       // 5. Process downloads sequentially (concurrency: 1) with retries for rock-solid stability
       int completedCount = 0;
+      int lastNotificationUpdateMs = 0;
       if (downloadQueue.isNotEmpty) {
         onStateChanged(PlaylistSyncState(
           playlistId: playlistId,
@@ -785,14 +740,19 @@ class YoutubeSyncService {
                   'Downloading: ${task.title} ($currentPct% • $speedText)',
             ));
 
-            SyncNativeService.updateSyncProgress(
-              title:
-                  'Syncing $playlistTitle (${completedCount + 1}/${downloadQueue.length})',
-              message: '${task.title} ($currentPct% • $speedText)',
-              progress: (overallProgress * 100).toInt(),
-              total: 100,
-              indeterminate: false,
-            );
+            final nowMs = DateTime.now().millisecondsSinceEpoch;
+            if (nowMs - lastNotificationUpdateMs >= 1000 ||
+                (bytesTotal > 0 && bytesReceived == bytesTotal)) {
+              lastNotificationUpdateMs = nowMs;
+              SyncNativeService.updateSyncProgress(
+                title:
+                    'Syncing $playlistTitle (${completedCount + 1}/${downloadQueue.length})',
+                message: '${task.title} ($currentPct% • $speedText)',
+                progress: (overallProgress * 100).toInt(),
+                total: 100,
+                indeterminate: false,
+              );
+            }
           },
         );
         completedCount++;
@@ -895,13 +855,16 @@ class YoutubeSyncService {
 
     if (preferredAudio != null) {
       final totalBytes = preferredAudio.size.totalBytes;
-      bool isUsable = false;
+      final hasRateBypass =
+          preferredAudio.url.queryParameters['ratebypass'] == 'yes';
 
-      // If file is small (< 1MB), no 403 risk beyond 1MB
-      if (totalBytes <= 1048576 && totalBytes > 0) {
+      bool isUsable = false;
+      if (hasRateBypass) {
         isUsable = true;
-      } else {
-        // Fast probe: request 1KB at offset 1MB to check if the CDN permits streaming past 1MB
+      } else if (totalBytes > 0 && totalBytes <= 1048576) {
+        isUsable = true;
+      } else if (totalBytes > 1048576) {
+        // Probe with a 256KB chunk at offset 1.25MB to verify whether CDN permits unthrottled streaming past 1MB
         try {
           final probeResponse = await _dio.get<ResponseBody>(
             preferredAudio.url.toString(),
@@ -910,10 +873,10 @@ class YoutubeSyncService {
               headers: {
                 'User-Agent':
                     'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip',
-                'Range': 'bytes=1048576-1049599',
+                'Range': 'bytes=1258291-1520435',
               },
-              sendTimeout: const Duration(milliseconds: 1800),
-              receiveTimeout: const Duration(milliseconds: 1800),
+              sendTimeout: const Duration(milliseconds: 2500),
+              receiveTimeout: const Duration(milliseconds: 2500),
               validateStatus: (status) => status != null && status < 500,
             ),
           );
@@ -936,8 +899,8 @@ class YoutubeSyncService {
       }
     }
 
-    // Audio-only stream is gated by the remote server with 403.
-    // Fall back to universal muxed stream (prefer itag 18, 360p MP4 with AAC audio)
+    // Audio-only stream is gated by remote server with 403 past 1MB.
+    // Fall back to universal muxed stream (prefer itag 18, 360p MP4 with AAC audio and ratebypass=yes)
     if (manifest.muxed.isNotEmpty) {
       final tag18 = manifest.muxed.where((s) => s.tag == 18).firstOrNull;
       final selectedMuxed = tag18 ??
@@ -962,82 +925,6 @@ class YoutubeSyncService {
     }
 
     throw StateError('No playable stream found for $videoId');
-  }
-
-  /// Streams media bytes with live progress and a per-chunk inactivity timeout
-  /// to eliminate indefinite stalls if a connection hangs.
-  Future<void> _downloadStreamWithTimeoutAndProgress({
-    required yt.YoutubeExplode ytClient,
-    required yt.StreamInfo streamInfo,
-    required File targetFile,
-    required void Function(int received, int total, double speedKbps)?
-        onProgress,
-  }) async {
-    final totalBytes = streamInfo.size.totalBytes;
-    final sink = targetFile.openWrite();
-    final sw = Stopwatch()..start();
-    int receivedBytes = 0;
-    int lastReportMs = 0;
-    Timer? inactivityTimer;
-    final completer = Completer<void>();
-
-    StreamSubscription<List<int>>? subscription;
-
-    void resetInactivityTimer() {
-      inactivityTimer?.cancel();
-      inactivityTimer = Timer(const Duration(seconds: 18), () {
-        subscription?.cancel();
-        if (!completer.isCompleted) {
-          completer.completeError(
-            TimeoutException(
-                'Download stalled: no data received for 18 seconds'),
-          );
-        }
-      });
-    }
-
-    try {
-      final stream = ytClient.videos.streamsClient.get(streamInfo);
-      resetInactivityTimer();
-
-      subscription = stream.listen(
-        (chunk) {
-          resetInactivityTimer();
-          sink.add(chunk);
-          receivedBytes += chunk.length;
-
-          final now = sw.elapsedMilliseconds;
-          if (now - lastReportMs >= 350 || receivedBytes == totalBytes) {
-            lastReportMs = now;
-            final elapsedSec = now / 1000.0;
-            final speedKbps =
-                elapsedSec > 0 ? (receivedBytes / 1024.0) / elapsedSec : 0.0;
-            onProgress?.call(receivedBytes, totalBytes, speedKbps);
-          }
-        },
-        onDone: () {
-          inactivityTimer?.cancel();
-          if (!completer.isCompleted) completer.complete();
-        },
-        onError: (err, stack) {
-          inactivityTimer?.cancel();
-          subscription?.cancel();
-          if (!completer.isCompleted) completer.completeError(err, stack);
-        },
-        cancelOnError: true,
-      );
-
-      await completer.future;
-      await sink.flush();
-      await sink.close();
-    } catch (e) {
-      inactivityTimer?.cancel();
-      subscription?.cancel();
-      try {
-        await sink.close();
-      } catch (_) {}
-      rethrow;
-    }
   }
 
   /// Downloads the native AAC/M4A audio stream and caches artwork
@@ -1067,7 +954,7 @@ class YoutubeSyncService {
       String? finalAudioPath;
       bool isMuxedDownload = false;
 
-      while (attempts < 4 && !downloaded) {
+      while (attempts < 3 && !downloaded) {
         attempts++;
         try {
           // Fetch stream manifest without WatchPage to avoid 429 rate limit
@@ -1093,60 +980,40 @@ class YoutubeSyncService {
 
           final expectedBytes = resolved.stream.size.totalBytes;
           final sw = Stopwatch()..start();
-          int lastDioReportMs = 0;
+          int lastProgressReportMs = 0;
 
-          // Attempt stream download with timeout and live progress
-          try {
-            await _downloadStreamWithTimeoutAndProgress(
-              ytClient: ytClient,
-              streamInfo: resolved.stream,
-              targetFile: partialFile,
-              onProgress: (received, total, speedKbps) {
-                final progressFraction =
-                    total > 0 ? (received / total).clamp(0.0, 1.0) : 0.0;
+          // Direct high-throughput download via Dio with Android User-Agent and keep-alive
+          await _dio.download(
+            resolved.stream.url.toString(),
+            targetPath,
+            deleteOnError: true,
+            options: Options(
+              headers: {
+                'User-Agent':
+                    'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip',
+                'Connection': 'keep-alive',
+              },
+              receiveTimeout: const Duration(seconds: 40),
+              sendTimeout: const Duration(seconds: 30),
+            ),
+            onReceiveProgress: (received, total) {
+              final now = sw.elapsedMilliseconds;
+              if (now - lastProgressReportMs >= 300 ||
+                  (total > 0 && received == total)) {
+                lastProgressReportMs = now;
+                final elapsedSec = now / 1000.0;
+                final speedKbps =
+                    elapsedSec > 0 ? (received / 1024.0) / elapsedSec : 0.0;
                 onTrackProgress?.call(
-                    progressFraction, received, total, speedKbps);
-              },
-            );
-            downloaded = true;
-          } catch (streamErr) {
-            debugPrint(
-                'Stream consumer error ($streamErr), trying direct download fallback...');
-            if (await partialFile.exists()) {
-              await partialFile.delete();
-            }
-            await _dio.download(
-              resolved.stream.url.toString(),
-              targetPath,
-              deleteOnError: true,
-              options: Options(
-                headers: {
-                  'User-Agent':
-                      'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip',
-                  'Connection': 'keep-alive',
-                },
-                receiveTimeout: const Duration(seconds: 30),
-                sendTimeout: const Duration(seconds: 30),
-              ),
-              onReceiveProgress: (received, total) {
-                final now = sw.elapsedMilliseconds;
-                if (now - lastDioReportMs >= 350 ||
-                    (total > 0 && received == total)) {
-                  lastDioReportMs = now;
-                  final elapsedSec = now / 1000.0;
-                  final speedKbps =
-                      elapsedSec > 0 ? (received / 1024.0) / elapsedSec : 0.0;
-                  onTrackProgress?.call(
-                    total > 0 ? (received / total).clamp(0.0, 1.0) : 0.0,
-                    received,
-                    total > 0 ? total : expectedBytes,
-                    speedKbps,
-                  );
-                }
-              },
-            );
-            downloaded = true;
-          }
+                  total > 0 ? (received / total).clamp(0.0, 1.0) : 0.0,
+                  received,
+                  total > 0 ? total : expectedBytes,
+                  speedKbps,
+                );
+              }
+            },
+          );
+          downloaded = true;
 
           // Strict validation: audio file must exist and match stream size to prevent truncated 0:00 playback
           final verifiedFile = File(targetPath);
@@ -1154,7 +1021,7 @@ class YoutubeSyncService {
               await verifiedFile.exists() ? await verifiedFile.length() : 0;
           final minRequired = expectedBytes > 0
               ? (expectedBytes * 0.85).round()
-              : 300 * 1024; // At least 300KB for full audio
+              : 50 * 1024;
 
           if (fileLength < minRequired) {
             downloaded = false;
@@ -1164,9 +1031,9 @@ class YoutubeSyncService {
             );
           }
         } catch (err) {
-          if (attempts >= 4) rethrow;
-          debugPrint('Retry $attempts/4 for ${task.title} after error: $err');
-          await Future.delayed(Duration(milliseconds: 1000 * attempts));
+          if (attempts >= 3) rethrow;
+          debugPrint('Retry $attempts/3 for ${task.title} after error: $err');
+          await Future.delayed(Duration(milliseconds: 600 * attempts));
         }
       }
 
@@ -1195,29 +1062,35 @@ class YoutubeSyncService {
         }
       }
 
-      // 2. Download thumbnail and lyrics concurrently for maximum speed
+      // 2. Obtain thumbnail and lyrics (reuse if already present and valid, otherwise fetch)
+      String? savedThumbPath = task.existingThumbnailPath;
+      if (savedThumbPath == null || !await File(savedThumbPath).exists()) {
+        savedThumbPath = await _downloadThumbnailWithFallback(
+          videoId: task.videoId,
+          trackId: task.trackId,
+          thumbDir: thumbDir,
+        );
+      }
+
+      String? lyrics = task.existingLyrics;
+      if (lyrics == null || lyrics.trim().isEmpty) {
+        final cleanedMeta = cleanTitleAndArtist(
+          rawTitle: task.title,
+          rawAuthor: task.author,
+        );
+        lyrics = await _fetchLyrics(
+          ytClient: ytClient,
+          videoId: task.videoId,
+          title: cleanedMeta.title,
+          artist: cleanedMeta.artist,
+          duration: task.duration,
+        );
+      }
+
       final cleanedMeta = cleanTitleAndArtist(
         rawTitle: task.title,
         rawAuthor: task.author,
       );
-
-      final thumbFuture = _downloadThumbnailWithFallback(
-        videoId: task.videoId,
-        trackId: task.trackId,
-        thumbDir: thumbDir,
-      );
-
-      final lyricsFuture = _fetchLyrics(
-        ytClient: ytClient,
-        videoId: task.videoId,
-        title: cleanedMeta.title,
-        artist: cleanedMeta.artist,
-        duration: task.duration,
-      );
-
-      final results = await Future.wait([thumbFuture, lyricsFuture]);
-      final savedThumbPath = results[0];
-      final lyrics = results[1];
 
       // 4. Update DB track record immediately so all data is ready on first sync
       await (_db.update(_db.tracks)..where((t) => t.id.equals(task.trackId)))
@@ -1566,6 +1439,86 @@ class YoutubeSyncService {
     } catch (_) {}
     return 0;
   }
+
+  /// Forces a complete re-download and metadata refresh for a single track
+  Future<void> resyncSingleTrack({
+    required String trackId,
+    void Function(PlaylistSyncState)? onStateChanged,
+  }) async {
+    final track = await _db.getTrackById(trackId);
+    if (track == null || track.youtubeVideoId == null) {
+      debugPrint(
+          'Cannot resync track $trackId: not found or not linked to remote video.');
+      return;
+    }
+
+    final ytClient = yt.YoutubeExplode();
+    try {
+      onStateChanged?.call(PlaylistSyncState(
+        playlistId: 'single_track',
+        isSyncing: true,
+        stage: SyncStage.downloading,
+        totalTracksInPlaylist: 1,
+        totalToDownload: 1,
+        completedDownloads: 0,
+        currentTrackTitle: track.title,
+        statusMessage: 'Resyncing: ${track.title}',
+      ));
+
+      final task = _PendingDownloadTask(
+        trackId: track.id,
+        videoId: track.youtubeVideoId!,
+        title: track.title,
+        author: track.artist,
+        duration: Duration(milliseconds: track.durationMs),
+        existingThumbnailPath: null,
+        existingLyrics: null,
+      );
+
+      await _downloadAndProcessTrack(
+        ytClient: ytClient,
+        task: task,
+        onTrackProgress: (progress, received, total, speedKbps) {
+          onStateChanged?.call(PlaylistSyncState(
+            playlistId: 'single_track',
+            isSyncing: true,
+            stage: SyncStage.downloading,
+            totalTracksInPlaylist: 1,
+            totalToDownload: 1,
+            completedDownloads: 0,
+            trackProgress: progress,
+            trackBytesReceived: received,
+            trackBytesTotal: total,
+            downloadSpeedKbps: speedKbps,
+            currentTrackTitle: track.title,
+            statusMessage: 'Downloading: ${track.title}',
+          ));
+        },
+      );
+
+      onStateChanged?.call(PlaylistSyncState(
+        playlistId: 'single_track',
+        isSyncing: false,
+        stage: SyncStage.completed,
+        totalTracksInPlaylist: 1,
+        totalToDownload: 1,
+        completedDownloads: 1,
+        currentTrackTitle: track.title,
+        statusMessage: 'Resynced: ${track.title}',
+      ));
+    } catch (e) {
+      onStateChanged?.call(PlaylistSyncState(
+        playlistId: 'single_track',
+        isSyncing: false,
+        stage: SyncStage.error,
+        errorMessage: e.toString(),
+        statusMessage: 'Error resyncing ${track.title}: $e',
+      ));
+      rethrow;
+    } finally {
+      ytClient.close();
+    }
+  }
 }
 
 class _PendingDownloadTask {
@@ -1574,6 +1527,8 @@ class _PendingDownloadTask {
   final String title;
   final String author;
   final Duration duration;
+  final String? existingThumbnailPath;
+  final String? existingLyrics;
 
   _PendingDownloadTask({
     required this.trackId,
@@ -1581,6 +1536,8 @@ class _PendingDownloadTask {
     required this.title,
     required this.author,
     required this.duration,
+    this.existingThumbnailPath,
+    this.existingLyrics,
   });
 }
 
@@ -1606,15 +1563,26 @@ class SyncControllerNotifier
 
   Future<void> syncPlaylist(
     String playlistId, {
+    bool forceResync = false,
     bool convertToMp3 = false,
     bool deleteOrphans = false,
   }) async {
     await _syncService.syncPlaylist(
       playlistId: playlistId,
+      forceResync: forceResync,
       convertToMp3: convertToMp3,
       deleteOrphanedFiles: deleteOrphans,
       onStateChanged: (syncState) {
         state = {...state, playlistId: syncState};
+      },
+    );
+  }
+
+  Future<void> resyncTrack(String trackId) async {
+    await _syncService.resyncSingleTrack(
+      trackId: trackId,
+      onStateChanged: (syncState) {
+        state = {...state, 'track_$trackId': syncState};
       },
     );
   }

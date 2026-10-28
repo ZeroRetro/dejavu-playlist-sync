@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio_background/just_audio_background.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'core/database/app_database.dart';
 import 'core/theme/dejavu_theme.dart';
 import 'features/library/library_screen.dart';
 import 'features/player/audio_player_controller.dart';
@@ -73,11 +74,23 @@ class _MainScaffoldState extends ConsumerState<MainScaffold> {
   void initState() {
     super.initState();
     _requestNotificationPermission();
+    _verifyDatabaseIntegrity();
     _lifecycleListener = AppLifecycleListener(
       onDetach: () {
         ref.read(audioPlayerControllerProvider.notifier).stopAndClear();
       },
     );
+  }
+
+  void _verifyDatabaseIntegrity() {
+    Future.microtask(() async {
+      try {
+        final db = ref.read(appDatabaseProvider);
+        await db.verifyLocalIntegrity();
+      } catch (e) {
+        debugPrint('Startup database integrity check notice: $e');
+      }
+    });
   }
 
   Future<void> _requestNotificationPermission() async {

@@ -7,7 +7,8 @@ import '../../../core/theme/dejavu_theme.dart';
 
 /// Shows a sleek, informative bottom sheet with playlist technical details.
 void showPlaylistDetailsSheet(
-    BuildContext context, AppDatabase db, Playlist initialPlaylist) {
+    BuildContext context, AppDatabase db, Playlist initialPlaylist,
+    {VoidCallback? onForceResync}) {
   showModalBottomSheet(
     context: context,
     backgroundColor: DejaVuColors.surface,
@@ -127,6 +128,34 @@ void showPlaylistDetailsSheet(
                               )
                             : null,
                       ),
+                      if (onForceResync != null &&
+                          currentPlaylist.isYoutubeSynced) ...[
+                        const SizedBox(height: 20),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: DejaVuColors.accent,
+                              side: const BorderSide(
+                                  color: DejaVuColors.accent, width: 1.2),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                            ),
+                            onPressed: () {
+                              Navigator.pop(ctx);
+                              onForceResync();
+                            },
+                            icon:
+                                const Icon(Icons.restart_alt_rounded, size: 20),
+                            label: const Text(
+                              'Force Resync Entire Playlist',
+                              style: TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),

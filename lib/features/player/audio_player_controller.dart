@@ -135,8 +135,10 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
     _subscriptions.add(_player.playbackEventStream.listen(
       (event) {},
       onError: (Object error, StackTrace stackTrace) {
-        debugPrint('AudioPlayer error: $error');
-        stopAndClear();
+        debugPrint('AudioPlayer playback event error: $error');
+        state = state.copyWith(isPlaying: false, isBuffering: false);
+        // Automatically attempt to advance to the next track if available
+        seekToNext();
       },
     ));
   }
@@ -234,7 +236,7 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
 
     _playlistSource = ConcatenatingAudioSource(
       children: audioSources,
-      useLazyPreparation: true,
+      useLazyPreparation: false, // Pre-prepare local files to eliminate seek latency and buffer stalls
     );
 
     state = state.copyWith(
@@ -249,22 +251,39 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
 
     _maybeFetchLyrics(actualTargetTrack);
 
+    // If currently playing, pause first to release active audio sink buffers cleanly
+    try {
+      if (_player.playing) {
+        await _player.pause();
+      }
+    } catch (_) {}
+
     _isLoadingSource = true;
     try {
       await _player.setAudioSource(
         _playlistSource!,
         initialIndex: safeIndex,
         initialPosition: Duration.zero,
-      );
+      ).timeout(const Duration(seconds: 4));
+      // Explicitly call play() so playback begins immediately and never stalls at 0:00!
       await _player.play();
     } catch (e) {
       debugPrint('Error playing playlist: $e');
     } finally {
       _isLoadingSource = false;
+      // Guarantee controller state is aligned with target track
+      if (state.currentIndex != safeIndex ||
+          state.currentTrack?.id != actualTargetTrack.id) {
+        state = state.copyWith(
+          currentIndex: safeIndex,
+          currentTrack: () => actualTargetTrack,
+          duration: Duration(milliseconds: actualTargetTrack.durationMs),
+        );
+      }
     }
   }
 
-  bool _isChangingTrack = false;
+  int _operationToken = 0;
 
   /// Play a single track directly
   Future<void> playTrack(
@@ -272,14 +291,14 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
     List<Track>? contextTracks,
     Playlist? playlist,
   }) async {
-    if (_isChangingTrack) return;
-    _isChangingTrack = true;
+    final myToken = ++_operationToken;
     try {
       if (track.localFilePath == null) return;
       try {
         final f = File(track.localFilePath!);
         if (!f.existsSync() || f.lengthSync() < 50 * 1024) {
-          debugPrint('Audio file is missing or invalid (< 50KB): ${track.localFilePath}');
+          debugPrint(
+              'Audio file is missing or invalid (< 50KB): ${track.localFilePath}');
           return;
         }
       } catch (_) {
@@ -291,23 +310,15 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
             id: 'now_playing',
             name: 'All Songs',
             isYoutubeSynced: false,
-            createdAt: DateTime.now(),
+            createdAt: DateTime.fromMillisecondsSinceEpoch(0),
           );
 
-      // Fast-path seek only applies if we are ALREADY playing within this exact playlist context
-      final isSamePlaylistContext = state.currentPlaylist?.id == targetPlaylist.id;
-
-      // Check if contextTracks matches current queue
-      final isSameQueue = contextTracks == null ||
-          (state.queue.length == contextTracks.length &&
-              state.queue.isNotEmpty &&
-              state.queue.first.id == contextTracks.first.id &&
-              state.queue.last.id == contextTracks.last.id);
-
-      final isSameContext = isSamePlaylistContext && isSameQueue;
+      // Fast-path seek: if we are already in the same playlist context and track is in queue
+      final isSamePlaylistContext =
+          state.currentPlaylist?.id == targetPlaylist.id;
       final existingIndex = state.queue.indexWhere((t) => t.id == track.id);
 
-      if (isSameContext &&
+      if (isSamePlaylistContext &&
           _playlistSource != null &&
           existingIndex >= 0 &&
           existingIndex < state.queue.length &&
@@ -316,14 +327,16 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
 
         // If it is already the current track, ensure it's playing or seek to start
         if (state.currentTrack?.id == track.id) {
-          if (!_player.playing) {
+          try {
+            await _player
+                .seek(Duration.zero, index: existingIndex)
+                .timeout(const Duration(seconds: 3));
             await _player.play();
-          } else {
-            await _player.seek(Duration.zero, index: existingIndex);
-          }
+          } catch (_) {}
           return;
         }
 
+        // Optimistically update UI immediately so user sees the track highlighted right away
         state = state.copyWith(
           currentIndex: existingIndex,
           currentTrack: () => targetTrack,
@@ -332,16 +345,22 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
           isPlaying: true,
         );
         _maybeFetchLyrics(targetTrack);
+
         try {
-          await _player.seek(Duration.zero, index: existingIndex);
-          if (!_player.playing) {
-            await _player.play();
-          }
+          await _player
+              .seek(Duration.zero, index: existingIndex)
+              .timeout(const Duration(seconds: 3));
+          if (_operationToken != myToken) return;
+          // ALWAYS ensure play is called so player does not stay paused at 0:00!
+          await _player.play();
           return;
         } catch (e) {
-          debugPrint('Direct seek to existing queue track failed, reloading playlist: $e');
+          debugPrint(
+              'Direct seek to existing queue track failed, reloading playlist: $e');
         }
       }
+
+      if (_operationToken != myToken) return;
 
       // Otherwise, initialize new queue from contextTracks (or single track) under targetPlaylist
       final tracks = contextTracks ?? [track];
@@ -350,9 +369,8 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
         tracks,
         targetTrack: track,
       );
-    } finally {
-      await Future.delayed(const Duration(milliseconds: 100));
-      _isChangingTrack = false;
+    } catch (e) {
+      debugPrint('Error in playTrack: $e');
     }
   }
 
@@ -385,35 +403,33 @@ class AudioPlayerController extends StateNotifier<PlayerStateSnapshot> {
   Future<void> seek(Duration position) => _player.seek(position);
 
   Future<void> seekToNext() async {
-    if (_isChangingTrack) return;
-    _isChangingTrack = true;
+    final myToken = ++_operationToken;
     try {
       if (_player.hasNext) {
-        await _player.seekToNext();
+        await _player.seekToNext().timeout(const Duration(seconds: 3));
+        if (_operationToken != myToken) return;
+        // Explicitly call play() so next track starts immediately and never stalls at 0:00
+        await _player.play();
       }
     } catch (e) {
       debugPrint('Error seeking to next: $e');
-    } finally {
-      // Guard against rapid multi-tap popping by allowing the audio pipeline to stabilize
-      await Future.delayed(const Duration(milliseconds: 120));
-      _isChangingTrack = false;
     }
   }
 
   Future<void> seekToPrevious() async {
-    if (_isChangingTrack) return;
-    _isChangingTrack = true;
+    final myToken = ++_operationToken;
     try {
       if (_player.position.inSeconds > 3) {
-        await _player.seek(Duration.zero);
+        await _player.seek(Duration.zero).timeout(const Duration(seconds: 3));
+        if (_operationToken != myToken) return;
+        await _player.play();
       } else if (_player.hasPrevious) {
-        await _player.seekToPrevious();
+        await _player.seekToPrevious().timeout(const Duration(seconds: 3));
+        if (_operationToken != myToken) return;
+        await _player.play();
       }
     } catch (e) {
       debugPrint('Error seeking to previous: $e');
-    } finally {
-      await Future.delayed(const Duration(milliseconds: 120));
-      _isChangingTrack = false;
     }
   }
 

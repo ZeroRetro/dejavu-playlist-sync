@@ -192,7 +192,7 @@ void main() {
 
     final playlist = Playlist(
       id: 'pl_rock',
-      name: 'Rock Classics',
+      name: 'Genre Playlist A',
       isYoutubeSynced: true,
       createdAt: now,
     );
@@ -244,7 +244,7 @@ void main() {
 
     final playlist = Playlist(
       id: 'pl_rock',
-      name: 'Rock Classics',
+      name: 'Genre Playlist A',
       isYoutubeSynced: true,
       createdAt: now,
     );
@@ -293,7 +293,7 @@ void main() {
 
     final playlist = Playlist(
       id: 'pl_rock',
-      name: 'Rock Classics',
+      name: 'Genre Playlist A',
       isYoutubeSynced: true,
       createdAt: now,
     );
@@ -348,7 +348,7 @@ void main() {
 
     final playlist = Playlist(
       id: 'pl_rock',
-      name: 'Rock Classics',
+      name: 'Genre Playlist A',
       isYoutubeSynced: true,
       createdAt: now,
     );
@@ -443,7 +443,7 @@ void main() {
 
     final playlist = Playlist(
       id: 'pl_jazz',
-      name: 'Smooth Jazz',
+      name: 'Genre Playlist B',
       isYoutubeSynced: true,
       createdAt: now,
     );
@@ -486,7 +486,7 @@ void main() {
 
     final playlist = Playlist(
       id: 'pl_metal',
-      name: 'Heavy Metal',
+      name: 'Genre Playlist C',
       isYoutubeSynced: true,
       createdAt: now,
     );
@@ -553,6 +553,141 @@ void main() {
     expect(controller.state.queue.length, 1);
     expect(controller.state.queue.first.id, 't_done');
     expect(controller.state.currentIndex, 0);
+
+    controller.dispose();
+  });
+
+  test('Change tracks while playing inside playlist (seamless in-place seek)', () async {
+    final now = DateTime.now();
+    final t1 = Track(
+      id: 'track_a',
+      title: 'Sample Track A',
+      artist: 'Artist A',
+      durationMs: 180000,
+      localFilePath: file1.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now,
+    );
+    final t2 = Track(
+      id: 'track_b',
+      title: 'Sample Track B',
+      artist: 'Artist B',
+      durationMs: 200000,
+      localFilePath: file2.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now.add(const Duration(seconds: 1)),
+    );
+
+    final playlist = Playlist(
+      id: 'pl_jazz',
+      name: 'Genre Playlist D',
+      isYoutubeSynced: false,
+      createdAt: now,
+    );
+
+    final controller = AudioPlayerController();
+
+    // Start playing Track A
+    await controller.playTrack(t1, contextTracks: [t1, t2], playlist: playlist);
+    expect(controller.state.currentTrack?.id, 'track_a');
+    expect(controller.state.isPlaying, isTrue);
+
+    // While actively playing, user taps Track B in the same playlist
+    await controller.playTrack(t2, contextTracks: [t1, t2], playlist: playlist);
+    expect(controller.state.currentTrack?.id, 'track_b');
+    expect(controller.state.isPlaying, isTrue);
+    expect(controller.state.currentIndex, 1);
+
+    controller.dispose();
+  });
+
+  test('Change tracks while playing in All Songs tab', () async {
+    final now = DateTime.now();
+    final t1 = Track(
+      id: 'track_x',
+      title: 'Sample Track X',
+      artist: 'Artist X',
+      durationMs: 180000,
+      localFilePath: file1.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now,
+    );
+    final t2 = Track(
+      id: 'track_y',
+      title: 'Sample Track Y',
+      artist: 'Artist Y',
+      durationMs: 200000,
+      localFilePath: file2.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now.add(const Duration(seconds: 1)),
+    );
+
+    final allSongsList = [t1, t2];
+    final controller = AudioPlayerController();
+
+    // Start Track X in All Songs
+    await controller.playTrack(t1, contextTracks: allSongsList);
+    expect(controller.state.currentTrack?.id, 'track_x');
+    expect(controller.state.isPlaying, isTrue);
+
+    // While actively playing, user taps Track Y in All Songs
+    await controller.playTrack(t2, contextTracks: allSongsList);
+    expect(controller.state.currentTrack?.id, 'track_y');
+    expect(controller.state.isPlaying, isTrue);
+    expect(controller.state.currentIndex, 1);
+
+    controller.dispose();
+  });
+
+  test('Rapid Next / Prev invocations while playing do not lock player', () async {
+    final now = DateTime.now();
+    final t1 = Track(
+      id: 't_one',
+      title: 'Song 1',
+      artist: 'Artist',
+      durationMs: 180000,
+      localFilePath: file1.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now,
+    );
+    final t2 = Track(
+      id: 't_two',
+      title: 'Song 2',
+      artist: 'Artist',
+      durationMs: 200000,
+      localFilePath: file2.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now.add(const Duration(seconds: 1)),
+    );
+    final t3 = Track(
+      id: 't_three',
+      title: 'Song 3',
+      artist: 'Artist',
+      durationMs: 220000,
+      localFilePath: file3.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now.add(const Duration(seconds: 2)),
+    );
+
+    final controller = AudioPlayerController();
+    await controller.playPlaylist(
+      Playlist(
+        id: 'pl_multi',
+        name: 'Multi',
+        isYoutubeSynced: false,
+        createdAt: now,
+      ),
+      [t1, t2, t3],
+      initialIndex: 0,
+    );
+
+    // Rapidly invoke seekToNext several times without delays
+    await Future.wait([
+      controller.seekToNext(),
+      controller.seekToNext(),
+    ]);
+
+    expect(controller.state.isPlaying, isTrue);
 
     controller.dispose();
   });

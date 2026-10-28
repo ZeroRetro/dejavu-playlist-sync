@@ -45,8 +45,8 @@ void main() {
       final tracks = [
         Track(
           id: 't1',
-          title: 'Big Buck Bunny Suite',
-          artist: 'Blender Foundation',
+          title: 'Sample Track 1',
+          artist: 'Generic Artist 1',
           durationMs: 432000,
           localFilePath: '/storage/emulated/0/dejavu_audio/t1.m4a',
           downloadStatus: DownloadStatus.completed,
@@ -54,8 +54,8 @@ void main() {
         ),
         Track(
           id: 't2',
-          title: 'Sintel Theme',
-          artist: 'Jan Morgenstern',
+          title: 'Sample Track 2',
+          artist: 'Generic Artist 2',
           durationMs: 253000,
           localFilePath: '/storage/emulated/0/dejavu_audio/t2.m4a',
           downloadStatus: DownloadStatus.completed,
@@ -72,9 +72,9 @@ void main() {
       expect(m3u8, contains('#EXTM3U'));
       expect(m3u8, contains('#PLAYLIST:Open Media Archive'));
       expect(m3u8,
-          contains('#EXTINF:432,Blender Foundation - Big Buck Bunny Suite'));
+          contains('#EXTINF:432,Generic Artist 1 - Sample Track 1'));
       expect(m3u8, contains('t1.m4a'));
-      expect(m3u8, contains('#EXTINF:253,Jan Morgenstern - Sintel Theme'));
+      expect(m3u8, contains('#EXTINF:253,Generic Artist 2 - Sample Track 2'));
       expect(m3u8, contains('t2.m4a'));
     });
 
@@ -194,8 +194,8 @@ void main() {
       await db.upsertTrack(
         TracksCompanion.insert(
           id: trackId,
-          title: 'Canon in D Major',
-          artist: 'Johann Pachelbel',
+          title: 'Classical Melody',
+          artist: 'Public Domain Artist',
           downloadStatus: const Value(DownloadStatus.completed),
         ),
       );

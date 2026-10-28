@@ -5,6 +5,7 @@ import '../../core/database/app_database.dart';
 import '../../core/theme/dejavu_theme.dart';
 import '../../core/widgets/about_app_sheet.dart';
 import '../player/audio_player_controller.dart';
+import '../sync_engine/youtube_sync_service.dart';
 
 class LibraryScreen extends ConsumerStatefulWidget {
   const LibraryScreen({super.key});
@@ -16,6 +17,7 @@ class LibraryScreen extends ConsumerStatefulWidget {
 class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   final _searchController = TextEditingController();
   String _searchQuery = '';
+  DownloadStatus? _statusFilter;
 
   @override
   void dispose() {
@@ -30,12 +32,33 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
     final tracksAsync = ref.watch(allTracksStreamProvider);
     final allTracks = tracksAsync.valueOrNull ?? [];
 
-    final filtered = _searchQuery.isEmpty
+    final failedCount =
+        allTracks.where((t) => t.downloadStatus == DownloadStatus.failed).length;
+    final downloadingCount = allTracks
+        .where((t) =>
+            t.downloadStatus == DownloadStatus.downloading ||
+            t.downloadStatus == DownloadStatus.converting)
+        .length;
+
+    var filtered = _searchQuery.isEmpty
         ? allTracks
         : allTracks.where((t) {
             return t.title.toLowerCase().contains(_searchQuery) ||
                 t.artist.toLowerCase().contains(_searchQuery);
           }).toList();
+
+    if (_statusFilter != null) {
+      if (_statusFilter == DownloadStatus.downloading) {
+        filtered = filtered
+            .where((t) =>
+                t.downloadStatus == DownloadStatus.downloading ||
+                t.downloadStatus == DownloadStatus.converting)
+            .toList();
+      } else {
+        filtered =
+            filtered.where((t) => t.downloadStatus == _statusFilter).toList();
+      }
+    }
 
     return Scaffold(
           backgroundColor: DejaVuColors.background,
@@ -102,6 +125,58 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                   ),
                 ),
               ),
+
+              // Status Filter Chips
+              if (allTracks.isNotEmpty)
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  child: Row(
+                    children: [
+                      _buildFilterChip(
+                        label: 'All (${allTracks.length})',
+                        isSelected: _statusFilter == null,
+                        onTap: () => setState(() => _statusFilter = null),
+                      ),
+                      const SizedBox(width: 8),
+                      _buildFilterChip(
+                        label: 'Downloaded',
+                        isSelected:
+                            _statusFilter == DownloadStatus.completed,
+                        onTap: () => setState(() => _statusFilter =
+                            _statusFilter == DownloadStatus.completed
+                                ? null
+                                : DownloadStatus.completed),
+                      ),
+                      if (downloadingCount > 0) ...[
+                        const SizedBox(width: 8),
+                        _buildFilterChip(
+                          label: 'Downloading ($downloadingCount)',
+                          isSelected:
+                              _statusFilter == DownloadStatus.downloading,
+                          onTap: () => setState(() => _statusFilter =
+                              _statusFilter == DownloadStatus.downloading
+                                  ? null
+                                  : DownloadStatus.downloading),
+                        ),
+                      ],
+                      if (failedCount > 0) ...[
+                        const SizedBox(width: 8),
+                        _buildFilterChip(
+                          label: 'Failed ($failedCount)',
+                          isSelected:
+                              _statusFilter == DownloadStatus.failed,
+                          color: Colors.redAccent,
+                          onTap: () => setState(() => _statusFilter =
+                              _statusFilter == DownloadStatus.failed
+                                  ? null
+                                  : DownloadStatus.failed),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
 
               // Track List
               Expanded(
@@ -240,6 +315,29 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                 ),
               ),
               const Divider(color: Colors.white10),
+              if (track.youtubeVideoId != null)
+                ListTile(
+                  leading: const Icon(Icons.sync_rounded,
+                      color: DejaVuColors.accent),
+                  title: const Text('Resync Song',
+                      style: TextStyle(color: DejaVuColors.textPrimary)),
+                  subtitle: const Text(
+                      'Re-download audio, refresh artwork & lyrics',
+                      style: TextStyle(
+                          color: DejaVuColors.textSecondary, fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    ref
+                        .read(syncControllerProvider.notifier)
+                        .resyncTrack(track.id);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Resyncing "${track.title}"...'),
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                ),
               ListTile(
                 leading: const Icon(Icons.delete_outline_rounded,
                     color: Colors.redAccent),
@@ -291,6 +389,41 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                 },
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFilterChip({
+    required String label,
+    required bool isSelected,
+    required VoidCallback onTap,
+    Color? color,
+  }) {
+    final activeColor = color ?? DejaVuColors.accent;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(100),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? activeColor.withValues(alpha: 0.2)
+              : DejaVuColors.surface,
+          borderRadius: BorderRadius.circular(100),
+          border: Border.all(
+            color: isSelected ? activeColor : Colors.white12,
+            width: 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+            color: isSelected ? activeColor : DejaVuColors.textSecondary,
           ),
         ),
       ),

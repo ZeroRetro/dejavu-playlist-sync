@@ -392,6 +392,35 @@ class AppDatabase extends _$AppDatabase {
     }
     return orphans.length;
   }
+
+  /// Verifies that all completed tracks still exist on disk with valid size (>= 50KB).
+  /// If missing or truncated, updates their status to pending so they can be re-synced.
+  Future<int> verifyLocalIntegrity() async {
+    final completed = await (select(tracks)
+          ..where((t) => t.downloadStatus.equals(DownloadStatus.completed.index)))
+        .get();
+
+    int fixedCount = 0;
+    for (final track in completed) {
+      bool isValid = false;
+      if (track.localFilePath != null) {
+        final f = File(track.localFilePath!);
+        if (f.existsSync() && f.lengthSync() >= 50 * 1024) {
+          isValid = true;
+        }
+      }
+      if (!isValid) {
+        await (update(tracks)..where((t) => t.id.equals(track.id))).write(
+          const TracksCompanion(
+            downloadStatus: Value(DownloadStatus.pending),
+            localFilePath: Value(null),
+          ),
+        );
+        fixedCount++;
+      }
+    }
+    return fixedCount;
+  }
 }
 
 LazyDatabase _openConnection() {

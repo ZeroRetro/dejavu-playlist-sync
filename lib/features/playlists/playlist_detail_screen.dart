@@ -27,13 +27,18 @@ class PlaylistDetailScreen extends ConsumerWidget {
         .watch(audioPlayerControllerProvider.select((s) => s.currentTrack?.id));
     final tracksAsync = ref.watch(playlistTracksStreamProvider(playlist.id));
 
-    void triggerSync() {
+    void triggerSync({bool force = false}) {
       if (isSyncing) return;
-      ref.read(syncControllerProvider.notifier).syncPlaylist(playlist.id);
+      ref.read(syncControllerProvider.notifier).syncPlaylist(
+            playlist.id,
+            forceResync: force,
+          );
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Starting playlist delta sync...'),
-          duration: Duration(seconds: 2),
+        SnackBar(
+          content: Text(force
+              ? 'Starting full playlist resync...'
+              : 'Starting playlist delta sync...'),
+          duration: const Duration(seconds: 2),
         ),
       );
     }
@@ -69,9 +74,16 @@ class PlaylistDetailScreen extends ConsumerWidget {
             ),
             onSelected: (val) async {
               if (val == 'sync') {
-                triggerSync();
+                triggerSync(force: false);
+              } else if (val == 'force_resync') {
+                triggerSync(force: true);
               } else if (val == 'details') {
-                showPlaylistDetailsSheet(context, db, playlist);
+                showPlaylistDetailsSheet(
+                  context,
+                  db,
+                  playlist,
+                  onForceResync: () => triggerSync(force: true),
+                );
               } else if (val == 'delete') {
                 final removed = await showRemovePlaylistDialog(
                   context,
@@ -99,6 +111,30 @@ class PlaylistDetailScreen extends ConsumerWidget {
                     const SizedBox(width: 8),
                     Text(
                       isSyncing ? 'Syncing...' : 'Sync Now',
+                      style: TextStyle(
+                        color: isSyncing
+                            ? DejaVuColors.textSecondary
+                            : DejaVuColors.textPrimary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'force_resync',
+                enabled: !isSyncing,
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.restart_alt_rounded,
+                      color: isSyncing
+                          ? DejaVuColors.textSecondary
+                          : DejaVuColors.textPrimary,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Force Resync All',
                       style: TextStyle(
                         color: isSyncing
                             ? DejaVuColors.textSecondary
@@ -412,13 +448,32 @@ class PlaylistDetailScreen extends ConsumerWidget {
                                 ref
                                     .read(
                                         audioPlayerControllerProvider.notifier)
-                                    .playPlaylist(
-                                      playlist,
-                                      downloadedTracks,
-                                      targetTrack: track,
+                                    .playTrack(
+                                      track,
+                                      contextTracks: downloadedTracks,
+                                      playlist: playlist,
                                     );
                               }
-                            : (isFailed ? triggerSync : () {}),
+                            : (isFailed
+                                ? () {
+                                    ref
+                                        .read(syncControllerProvider.notifier)
+                                        .resyncTrack(track.id);
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(
+                                            'Retrying download for "${track.title}"...'),
+                                        duration: const Duration(seconds: 2),
+                                      ),
+                                    );
+                                  }
+                                : () {}),
+                        onMoreTap: () => _showTrackOptionsMenu(
+                          context,
+                          ref,
+                          track,
+                          playlist,
+                        ),
                       );
                     },
                     childCount: tracks.length,
@@ -509,5 +564,131 @@ class PlaylistDetailScreen extends ConsumerWidget {
       return 'Up to date';
     }
     return '';
+  }
+
+  void _showTrackOptionsMenu(
+    BuildContext context,
+    WidgetRef ref,
+    Track track,
+    Playlist playlist,
+  ) {
+    final db = ref.read(appDatabaseProvider);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: DejaVuColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Colors.white24,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              ListTile(
+                title: Text(
+                  track.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: DejaVuColors.textPrimary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                subtitle: Text(
+                  track.artist,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: DejaVuColors.textSecondary),
+                ),
+              ),
+              const Divider(color: Colors.white10),
+              if (track.youtubeVideoId != null)
+                ListTile(
+                  leading: const Icon(Icons.sync_rounded,
+                      color: DejaVuColors.accent),
+                  title: const Text('Resync Song',
+                      style: TextStyle(color: DejaVuColors.textPrimary)),
+                  subtitle: const Text(
+                      'Re-download audio, refresh artwork & lyrics',
+                      style: TextStyle(
+                          color: DejaVuColors.textSecondary, fontSize: 12)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    ref
+                        .read(syncControllerProvider.notifier)
+                        .resyncTrack(track.id);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('Resyncing "${track.title}"...'),
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline_rounded,
+                    color: Colors.redAccent),
+                title: const Text('Delete from Device',
+                    style: TextStyle(color: Colors.redAccent)),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final confirm = await showDialog<bool>(
+                    context: context,
+                    builder: (dCtx) => AlertDialog(
+                      backgroundColor: DejaVuColors.surface,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      title: const Text('Delete Song',
+                          style: TextStyle(color: DejaVuColors.textPrimary)),
+                      content: Text(
+                        'Are you sure you want to permanently delete "${track.title}" from your phone?',
+                        style:
+                            const TextStyle(color: DejaVuColors.textSecondary),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(dCtx, false),
+                          child: const Text('Cancel',
+                              style:
+                                  TextStyle(color: DejaVuColors.textSecondary)),
+                        ),
+                        TextButton(
+                          style: TextButton.styleFrom(
+                              foregroundColor: Colors.redAccent),
+                          onPressed: () => Navigator.pop(dCtx, true),
+                          child: const Text('Delete'),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (confirm == true) {
+                    final playerNotifier =
+                        ref.read(audioPlayerControllerProvider.notifier);
+                    final playerState = ref.read(audioPlayerControllerProvider);
+                    final isCurrentTrack =
+                        playerState.currentTrack?.id == track.id;
+                    await db.deleteTrack(track.id);
+                    if (isCurrentTrack) {
+                      await playerNotifier.stopAndClear();
+                    }
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
