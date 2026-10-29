@@ -332,6 +332,7 @@ class ModernFloatingMiniPlayer extends StatelessWidget {
                         child: currentTrack.thumbnailPath != null
                             ? Image.file(
                                 File(currentTrack.thumbnailPath!),
+                                key: ValueKey(currentTrack.id),
                                 cacheWidth: 120,
                                 fit: BoxFit.cover,
                                 errorBuilder: (_, __, ___) => Container(

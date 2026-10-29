@@ -93,7 +93,15 @@ class MainActivity : AudioServiceActivity() {
                 "scanFile" -> {
                     val path = call.argument<String>("path")
                     if (path != null) {
-                        MediaScannerConnection.scanFile(this, arrayOf(path), null, null)
+                        // MediaScannerConnection only works on shared/external storage (e.g. /storage/emulated/0).
+                        // Private internal app directories (/data/user/0/... or filesDir) cannot be scanned by
+                        // the system MediaScanner service and will throw java.nio.file.NoSuchFileException.
+                        val isInternal = path.startsWith("/data/") ||
+                                path.startsWith(filesDir.path) ||
+                                path.startsWith(cacheDir.path)
+                        if (!isInternal) {
+                            MediaScannerConnection.scanFile(this, arrayOf(path), null, null)
+                        }
                         result.success(true)
                     } else {
                         result.success(false)

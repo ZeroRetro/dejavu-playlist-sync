@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:youtube_explode_dart/youtube_explode_dart.dart' as yt;
 
 import '../../core/theme/dejavu_theme.dart';
 import '../sync_engine/youtube_sync_service.dart';
@@ -28,6 +29,12 @@ class _NewPlaylistModalState extends ConsumerState<NewPlaylistModal> {
     final url = _urlController.text.trim();
     if (url.isEmpty) {
       setState(() => _errorMessage = 'Please enter a YouTube Playlist URL or ID.');
+      return;
+    }
+
+    final parsedId = yt.PlaylistId.parsePlaylistId(url);
+    if (parsedId == null) {
+      setState(() => _errorMessage = 'Please enter a valid YouTube Playlist URL or ID.');
       return;
     }
 

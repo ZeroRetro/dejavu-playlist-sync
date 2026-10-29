@@ -7,6 +7,13 @@ import '../../core/widgets/about_app_sheet.dart';
 import '../player/audio_player_controller.dart';
 import '../sync_engine/youtube_sync_service.dart';
 
+enum LibrarySortBy {
+  title,
+  artist,
+  recentlyAdded,
+  duration,
+}
+
 class LibraryScreen extends ConsumerStatefulWidget {
   const LibraryScreen({super.key});
 
@@ -17,6 +24,8 @@ class LibraryScreen extends ConsumerStatefulWidget {
 class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   final _searchController = TextEditingController();
   String _searchQuery = '';
+  LibrarySortBy _sortBy = LibrarySortBy.title;
+  bool _sortAscending = true;
   DownloadStatus? _statusFilter;
 
   @override
@@ -59,6 +68,27 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
             filtered.where((t) => t.downloadStatus == _statusFilter).toList();
       }
     }
+
+    final sortedList = List<Track>.from(filtered);
+    sortedList.sort((a, b) {
+      int cmp;
+      switch (_sortBy) {
+        case LibrarySortBy.title:
+          cmp = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+          break;
+        case LibrarySortBy.artist:
+          cmp = a.artist.toLowerCase().compareTo(b.artist.toLowerCase());
+          break;
+        case LibrarySortBy.recentlyAdded:
+          cmp = a.createdAt.compareTo(b.createdAt);
+          break;
+        case LibrarySortBy.duration:
+          cmp = a.durationMs.compareTo(b.durationMs);
+          break;
+      }
+      return _sortAscending ? cmp : -cmp;
+    });
+    filtered = sortedList;
 
     return Scaffold(
           backgroundColor: DejaVuColors.background,
@@ -126,7 +156,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                 ),
               ),
 
-              // Status Filter Chips
+              // Sort & Status Options Bar
               if (allTracks.isNotEmpty)
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
@@ -134,20 +164,24 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
                       const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                   child: Row(
                     children: [
-                      _buildFilterChip(
-                        label: 'All (${allTracks.length})',
-                        isSelected: _statusFilter == null,
-                        onTap: () => setState(() => _statusFilter = null),
+                      _buildSortChip(
+                        label: 'Title',
+                        sortBy: LibrarySortBy.title,
                       ),
                       const SizedBox(width: 8),
-                      _buildFilterChip(
-                        label: 'Downloaded',
-                        isSelected:
-                            _statusFilter == DownloadStatus.completed,
-                        onTap: () => setState(() => _statusFilter =
-                            _statusFilter == DownloadStatus.completed
-                                ? null
-                                : DownloadStatus.completed),
+                      _buildSortChip(
+                        label: 'Artist',
+                        sortBy: LibrarySortBy.artist,
+                      ),
+                      const SizedBox(width: 8),
+                      _buildSortChip(
+                        label: 'Recently Added',
+                        sortBy: LibrarySortBy.recentlyAdded,
+                      ),
+                      const SizedBox(width: 8),
+                      _buildSortChip(
+                        label: 'Duration',
+                        sortBy: LibrarySortBy.duration,
                       ),
                       if (downloadingCount > 0) ...[
                         const SizedBox(width: 8),
@@ -390,6 +424,67 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSortChip({
+    required String label,
+    required LibrarySortBy sortBy,
+  }) {
+    final isSelected = _sortBy == sortBy;
+    const activeColor = DejaVuColors.accent;
+
+    return InkWell(
+      onTap: () {
+        setState(() {
+          if (isSelected) {
+            _sortAscending = !_sortAscending;
+          } else {
+            _sortBy = sortBy;
+            // Default to ascending for text (Title, Artist), descending for Date Added and Duration
+            _sortAscending = (sortBy == LibrarySortBy.title ||
+                sortBy == LibrarySortBy.artist);
+          }
+        });
+      },
+      borderRadius: BorderRadius.circular(100),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? activeColor.withValues(alpha: 0.2)
+              : DejaVuColors.surface,
+          borderRadius: BorderRadius.circular(100),
+          border: Border.all(
+            color: isSelected ? activeColor : Colors.white12,
+            width: 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                color: isSelected ? activeColor : DejaVuColors.textSecondary,
+              ),
+            ),
+            if (isSelected) ...[
+              const SizedBox(width: 4),
+              Icon(
+                _sortAscending
+                    ? Icons.arrow_upward_rounded
+                    : Icons.arrow_downward_rounded,
+                size: 13,
+                color: activeColor,
+              ),
+            ],
+          ],
         ),
       ),
     );

@@ -281,7 +281,13 @@ class YoutubeSyncService {
               .firstMatch(html) ??
           RegExp(r'<title>(.*?) - YouTube</title>').firstMatch(html);
       if (titleMatch != null) {
-        playlistTitle = titleMatch.group(1);
+        final parsedTitle = titleMatch.group(1)?.trim();
+        if (parsedTitle != null &&
+            parsedTitle.isNotEmpty &&
+            parsedTitle.toLowerCase() != 'undefined' &&
+            parsedTitle.toLowerCase() != 'null') {
+          playlistTitle = parsedTitle;
+        }
       }
 
       final regex = RegExp(r'var ytInitialData = (\{.*?\});<\/script>');
@@ -1545,7 +1551,15 @@ class _PendingDownloadTask {
 // RIVERPOD PROVIDERS FOR THE UI
 // -----------------------------------------------------------------------------
 
-final dioProvider = Provider<Dio>((ref) => Dio());
+final dioProvider = Provider<Dio>((ref) {
+  return Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 30),
+      sendTimeout: const Duration(seconds: 30),
+    ),
+  );
+});
 
 final youtubeSyncServiceProvider = Provider<YoutubeSyncService>((ref) {
   return YoutubeSyncService(

@@ -8,11 +8,22 @@ import 'package:dejavu_music_player/features/player/audio_player_controller.dart
 class FakeAudioPlayerPlatform extends AudioPlayerPlatform {
   final _eventController = StreamController<PlaybackEventMessage>.broadcast();
   final _dataController = StreamController<PlayerDataMessage>.broadcast();
+  final List<SeekRequest> seekRequests = [];
   int? _currentIndex;
   bool _playing = false;
   ProcessingStateMessage _processingState = ProcessingStateMessage.idle;
 
   FakeAudioPlayerPlatform(super.id);
+
+  void setProcessingState(ProcessingStateMessage state) {
+    _processingState = state;
+    _broadcast();
+  }
+
+  void simulateAutoAdvance(int newIndex) {
+    _currentIndex = newIndex;
+    _broadcast();
+  }
 
   @override
   Stream<PlaybackEventMessage> get playbackEventMessageStream =>
@@ -67,6 +78,7 @@ class FakeAudioPlayerPlatform extends AudioPlayerPlatform {
 
   @override
   Future<SeekResponse> seek(SeekRequest request) async {
+    seekRequests.add(request);
     if (request.index != null) {
       _currentIndex = request.index;
     }
@@ -687,6 +699,290 @@ void main() {
       controller.seekToNext(),
     ]);
 
+    expect(controller.state.isPlaying, isTrue);
+
+    controller.dispose();
+  });
+
+  test('Skip arrow (seekToNext / seekToPrevious) updates currentTrack, index, and metadata synchronously', () async {
+    final now = DateTime.now();
+    final t1 = Track(
+      id: 'song_a',
+      title: 'First Song',
+      artist: 'Artist A',
+      durationMs: 180000,
+      localFilePath: file1.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now,
+    );
+    final t2 = Track(
+      id: 'song_b',
+      title: 'Second Song',
+      artist: 'Artist B',
+      durationMs: 200000,
+      localFilePath: file2.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now.add(const Duration(seconds: 1)),
+    );
+    final t3 = Track(
+      id: 'song_c',
+      title: 'Third Song',
+      artist: 'Artist C',
+      durationMs: 220000,
+      localFilePath: file3.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now.add(const Duration(seconds: 2)),
+    );
+
+    final controller = AudioPlayerController();
+    await controller.playPlaylist(
+      Playlist(
+        id: 'pl_sync_test',
+        name: 'Sync Test',
+        isYoutubeSynced: false,
+        createdAt: now,
+      ),
+      [t1, t2, t3],
+      initialIndex: 0,
+    );
+
+    // Initial state check
+    expect(controller.state.currentTrack?.id, 'song_a');
+    expect(controller.state.currentTrack?.title, 'First Song');
+    expect(controller.state.currentIndex, 0);
+
+    // 1. User clicks Next Arrow (seekToNext)
+    await controller.seekToNext();
+    expect(controller.state.currentTrack?.id, 'song_b');
+    expect(controller.state.currentTrack?.title, 'Second Song');
+    expect(controller.state.currentIndex, 1);
+    expect(controller.state.position, Duration.zero);
+
+    // 2. User clicks Next Arrow again (seekToNext -> song_c)
+    await controller.seekToNext();
+    expect(controller.state.currentTrack?.id, 'song_c');
+    expect(controller.state.currentTrack?.title, 'Third Song');
+    expect(controller.state.currentIndex, 2);
+
+    // 3. User clicks Previous Arrow within 3 seconds (seekToPrevious -> song_b)
+    await controller.seekToPrevious();
+    expect(controller.state.currentTrack?.id, 'song_b');
+    expect(controller.state.currentTrack?.title, 'Second Song');
+    expect(controller.state.currentIndex, 1);
+
+    controller.dispose();
+  });
+
+  test('Stall watchdog automatically nudges AudioTrack when playback stalls at 0:00', () async {
+    final controller = AudioPlayerController();
+    final now = DateTime.now();
+    final t1 = Track(
+      id: 'song_w1',
+      title: 'Track 1',
+      artist: 'Artist 1',
+      durationMs: 180000,
+      localFilePath: file1.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now,
+    );
+    final t2 = Track(
+      id: 'song_w2',
+      title: 'Track 2',
+      artist: 'Artist 2',
+      durationMs: 180000,
+      localFilePath: file2.path,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now.add(const Duration(seconds: 1)),
+    );
+
+    await controller.playPlaylist(
+      Playlist(
+        id: 'pl_watchdog',
+        name: 'Watchdog Playlist',
+        isYoutubeSynced: false,
+        createdAt: now,
+      ),
+      [t1, t2],
+      initialIndex: 0,
+    );
+
+    final playerPlatform =
+        (JustAudioPlatform.instance as FakeJustAudioPlatform).players.values.last;
+    playerPlatform.seekRequests.clear();
+
+    // Skip to next track
+    await controller.seekToNext();
+    expect(controller.state.currentTrack?.id, 'song_w2');
+    expect(controller.state.isPlaying, true);
+
+    // Initial seek requested 0:00
+    expect(playerPlatform.seekRequests.last.position, Duration.zero);
+
+    // Simulate an audio sink stall at 0:00 (ExoPlayer drops into buffering)
+    playerPlatform.setProcessingState(ProcessingStateMessage.buffering);
+
+    // Wait for the stall watchdog (1200ms) while position stays at 0
+    await Future.delayed(const Duration(milliseconds: 1350));
+
+    // Watchdog detected position <= 20ms and auto-nudged with 50ms
+    expect(
+      playerPlatform.seekRequests
+          .any((r) => r.position == const Duration(milliseconds: 50)),
+      isTrue,
+    );
+
+    controller.dispose();
+  });
+
+  test('Natural auto-advance transition updates currentTrack, lyrics, and metadata synchronously', () async {
+    final controller = AudioPlayerController();
+    final now = DateTime.now();
+    final t1 = Track(
+      id: 'song_auto_1',
+      title: 'First Auto Track',
+      artist: 'First Artist',
+      durationMs: 180000,
+      localFilePath: file1.path,
+      lyricsLrc: '[00:01.00] Lyrics for Song 1',
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now,
+    );
+    final t2 = Track(
+      id: 'song_auto_2',
+      title: 'Second Auto Track',
+      artist: 'Second Artist',
+      durationMs: 210000,
+      localFilePath: file2.path,
+      lyricsLrc: '[00:01.00] Lyrics for Song 2',
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now.add(const Duration(seconds: 1)),
+    );
+
+    await controller.playPlaylist(
+      Playlist(
+        id: 'pl_auto',
+        name: 'Auto Transition Playlist',
+        isYoutubeSynced: false,
+        createdAt: now,
+      ),
+      [t1, t2],
+      initialIndex: 0,
+    );
+
+    expect(controller.state.currentIndex, 0);
+    expect(controller.state.currentTrack?.id, 'song_auto_1');
+    expect(controller.state.currentTrack?.title, 'First Auto Track');
+    expect(controller.state.currentTrack?.lyricsLrc, '[00:01.00] Lyrics for Song 1');
+
+    final playerPlatform =
+        (JustAudioPlatform.instance as FakeJustAudioPlatform).players.values.last;
+
+    // Simulate ExoPlayer advancing naturally to index 1 as song 1 ends
+    playerPlatform.simulateAutoAdvance(1);
+
+    // Yield to stream event dispatch
+    await Future.delayed(const Duration(milliseconds: 50));
+
+    // Verify metadata and lyrics updated immediately to Song 2
+    expect(controller.state.currentIndex, 1);
+    expect(controller.state.currentTrack?.id, 'song_auto_2');
+    expect(controller.state.currentTrack?.title, 'Second Auto Track');
+    expect(controller.state.currentTrack?.artist, 'Second Artist');
+    expect(controller.state.currentTrack?.lyricsLrc, '[00:01.00] Lyrics for Song 2');
+    expect(controller.state.duration.inMilliseconds, 210000);
+
+    controller.dispose();
+  });
+
+  test('Playing song from Playlist A and then playing song from Playlist B updates context, queue, and metadata atomically without desync', () async {
+    final controller = AudioPlayerController();
+    final now = DateTime.now();
+
+    final trackA1 = Track(
+      id: 't_a1',
+      title: 'Track A1',
+      artist: 'Artist Alpha',
+      durationMs: 180000,
+      localFilePath: file1.path,
+      lyricsLrc: '[00:01.00] Lyrics Alpha 1',
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now,
+    );
+    final trackA2 = Track(
+      id: 't_a2',
+      title: 'Track A2',
+      artist: 'Artist Alpha',
+      durationMs: 200000,
+      localFilePath: file2.path,
+      lyricsLrc: '[00:01.00] Lyrics Alpha 2',
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now,
+    );
+
+    final trackB1 = Track(
+      id: 't_b1',
+      title: 'Track B1',
+      artist: 'Artist Beta',
+      durationMs: 220000,
+      localFilePath: file2.path,
+      lyricsLrc: '[00:01.00] Lyrics Beta 1',
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now,
+    );
+    final trackB2 = Track(
+      id: 't_b2',
+      title: 'Track B2',
+      artist: 'Artist Beta',
+      durationMs: 240000,
+      localFilePath: file3.path,
+      lyricsLrc: '[00:01.00] Lyrics Beta 2',
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now,
+    );
+
+    final playlistA = Playlist(
+      id: 'pl_alpha',
+      name: 'Alpha Playlist',
+      isYoutubeSynced: false,
+      createdAt: now,
+    );
+
+    final playlistB = Playlist(
+      id: 'pl_beta',
+      name: 'Beta Playlist',
+      isYoutubeSynced: false,
+      createdAt: now,
+    );
+
+    // 1. Start playing Track A1 from Playlist A
+    await controller.playTrack(
+      trackA1,
+      contextTracks: [trackA1, trackA2],
+      playlist: playlistA,
+    );
+
+    expect(controller.state.currentPlaylist?.id, 'pl_alpha');
+    expect(controller.state.currentTrack?.id, 't_a1');
+    expect(controller.state.currentTrack?.title, 'Track A1');
+    expect(controller.state.currentIndex, 0);
+    expect(controller.state.queue.map((t) => t.id).toList(), ['t_a1', 't_a2']);
+
+    // 2. While playing, user taps Track B2 in Playlist B
+    await controller.playTrack(
+      trackB2,
+      contextTracks: [trackB1, trackB2],
+      playlist: playlistB,
+    );
+
+    // 3. Verify that Playlist B's context, queue, and Track B2 metadata are immediately active
+    expect(controller.state.currentPlaylist?.id, 'pl_beta');
+    expect(controller.state.currentPlaylist?.name, 'Beta Playlist');
+    expect(controller.state.currentTrack?.id, 't_b2');
+    expect(controller.state.currentTrack?.title, 'Track B2');
+    expect(controller.state.currentTrack?.artist, 'Artist Beta');
+    expect(controller.state.currentTrack?.lyricsLrc, '[00:01.00] Lyrics Beta 2');
+    expect(controller.state.currentIndex, 1);
+    expect(controller.state.queue.map((t) => t.id).toList(), ['t_b1', 't_b2']);
     expect(controller.state.isPlaying, isTrue);
 
     controller.dispose();

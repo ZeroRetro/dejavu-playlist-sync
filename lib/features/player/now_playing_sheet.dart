@@ -109,6 +109,7 @@ class _NowPlayingSheetState extends ConsumerState<NowPlayingSheet> {
                       : (track.thumbnailPath != null
                           ? Image.file(
                               File(track.thumbnailPath!),
+                              key: ValueKey(track.id),
                               cacheWidth: 600,
                               fit: BoxFit.cover,
                               errorBuilder: (_, __, ___) => const Center(

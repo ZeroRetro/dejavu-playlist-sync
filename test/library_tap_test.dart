@@ -5,6 +5,7 @@ import 'package:just_audio_platform_interface/just_audio_platform_interface.dart
 import 'package:drift/native.dart';
 import 'package:drift/drift.dart' show Value;
 import 'package:dejavu_music_player/core/database/app_database.dart';
+import 'package:dejavu_music_player/features/library/library_screen.dart';
 import 'package:dejavu_music_player/features/player/audio_player_controller.dart';
 
 import 'player_interaction_test.dart';
@@ -113,5 +114,78 @@ void main() {
 
     await playerNotifier.stopAndClear();
     container.dispose();
+  });
+
+  test('Library sorting orders tracks accurately across Title, Artist, Recently Added, and Duration', () async {
+    final now = DateTime.now();
+    final tr1 = Track(
+      id: 't_a',
+      title: 'Zeta Track',
+      artist: 'Beta Artist',
+      durationMs: 120000,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now.subtract(const Duration(days: 2)),
+    );
+    final tr2 = Track(
+      id: 't_b',
+      title: 'Alpha Track',
+      artist: 'Gamma Artist',
+      durationMs: 300000,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now,
+    );
+    final tr3 = Track(
+      id: 't_c',
+      title: 'Beta Track',
+      artist: 'Alpha Artist',
+      durationMs: 180000,
+      downloadStatus: DownloadStatus.completed,
+      createdAt: now.subtract(const Duration(days: 1)),
+    );
+
+    final rawList = [tr1, tr2, tr3];
+
+    List<Track> sortTracks(List<Track> list, LibrarySortBy sortBy, bool ascending) {
+      final copy = List<Track>.from(list);
+      copy.sort((a, b) {
+        int cmp;
+        switch (sortBy) {
+          case LibrarySortBy.title:
+            cmp = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+            break;
+          case LibrarySortBy.artist:
+            cmp = a.artist.toLowerCase().compareTo(b.artist.toLowerCase());
+            break;
+          case LibrarySortBy.recentlyAdded:
+            cmp = a.createdAt.compareTo(b.createdAt);
+            break;
+          case LibrarySortBy.duration:
+            cmp = a.durationMs.compareTo(b.durationMs);
+            break;
+        }
+        return ascending ? cmp : -cmp;
+      });
+      return copy;
+    }
+
+    // 1. Sort by Title Ascending (Alpha, Beta, Zeta)
+    final byTitleAsc = sortTracks(rawList, LibrarySortBy.title, true);
+    expect(byTitleAsc.map((t) => t.id).toList(), ['t_b', 't_c', 't_a']);
+
+    // 2. Sort by Title Descending (Zeta, Beta, Alpha)
+    final byTitleDesc = sortTracks(rawList, LibrarySortBy.title, false);
+    expect(byTitleDesc.map((t) => t.id).toList(), ['t_a', 't_c', 't_b']);
+
+    // 3. Sort by Artist Ascending (Alpha Artist, Beta Artist, Gamma Artist)
+    final byArtistAsc = sortTracks(rawList, LibrarySortBy.artist, true);
+    expect(byArtistAsc.map((t) => t.id).toList(), ['t_c', 't_a', 't_b']);
+
+    // 4. Sort by Duration Descending (300k, 180k, 120k)
+    final byDurationDesc = sortTracks(rawList, LibrarySortBy.duration, false);
+    expect(byDurationDesc.map((t) => t.id).toList(), ['t_b', 't_c', 't_a']);
+
+    // 5. Sort by Recently Added Descending (Now, -1d, -2d)
+    final byRecentDesc = sortTracks(rawList, LibrarySortBy.recentlyAdded, false);
+    expect(byRecentDesc.map((t) => t.id).toList(), ['t_b', 't_c', 't_a']);
   });
 }

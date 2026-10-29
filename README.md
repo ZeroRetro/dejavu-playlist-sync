@@ -21,7 +21,7 @@
 
 Ready to listen offline? Grab the latest Android release from our official GitHub Releases:
 
-[![Download DejaVu APK](https://img.shields.io/badge/Download_Latest_APK-v1.0.0-C0151B?style=for-the-badge&logo=android&logoColor=white)](https://github.com/ZeroRetro/dejavu-playlist-sync/releases)
+[![Download DejaVu APK](https://img.shields.io/badge/Download_Latest_APK-v1.1.0-C0151B?style=for-the-badge&logo=android&logoColor=white)](https://github.com/ZeroRetro/dejavu-playlist-sync/releases)
 
 * **Official Releases**: [**github.com/ZeroRetro/dejavu-playlist-sync/releases**](https://github.com/ZeroRetro/dejavu-playlist-sync/releases)
 * **Package**: `DejaVu-Playlist-Sync.apk` *(Universal APK, Android 8.0+ / API 26+)*
